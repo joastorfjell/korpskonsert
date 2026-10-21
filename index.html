@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Korps">
+<meta name="theme-color" content="#111318">
+<title>Korpskonsert</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== Sangliste ===== -->
+  <section id="listView" class="view">
+    <header class="bar">
+      <h1>Korpskonsert</h1>
+      <div class="spacer"></div>
+      <button id="btnReorder" class="btn ghost">Rekkefølge</button>
+      <button id="btnImport" class="btn">Importer</button>
+      <button id="btnSettings" class="btn ghost icon" aria-label="Innstillinger">⚙︎</button>
+    </header>
+    <div id="songList" class="songlist"></div>
+    <div class="listfoot">
+      <button id="btnNewSong" class="btn ghost">+ Ny sang</button>
+      <span id="storageInfo" class="muted small"></span>
+    </div>
+  </section>
+
+  <!-- ===== Sangvisning ===== -->
+  <section id="songView" class="view hidden">
+    <header class="bar">
+      <button id="btnBack" class="btn ghost">‹ Sanger</button>
+      <div class="titlebox">
+        <div id="songTitle" class="title"></div>
+        <div id="songSub" class="sub"></div>
+      </div>
+      <div class="seg" id="modeSeg">
+        <button data-mode="chart" class="on">Besifring</button>
+        <button data-mode="split">Delt</button>
+        <button data-mode="sheet">Noter</button>
+      </div>
+      <button id="btnEdit" class="btn ghost" title="Rediger besifring">✎ Rediger</button>
+      <button id="btnSync" class="btn ghost" title="Juster synk mot opptak">⏱ Synk</button>
+      <button id="btnSongMenu" class="btn ghost icon" aria-label="Mer">⋯</button>
+    </header>
+
+    <div id="nowStrip" class="now">
+      <div class="nowcell measure"><span class="lbl">Takt</span><span id="nowMeasure">–</span><span id="nowRep" class="rep"></span></div>
+      <div class="nowcell chord"><span class="lbl">Nå</span><span id="nowChord" class="big">–</span></div>
+      <div class="nowcell chord next"><span class="lbl">Neste</span><span id="nextChord" class="big">–</span><span id="nextIn" class="rep"></span></div>
+      <div class="nowcell info"><span id="transBadge" class="badge hidden"></span><span id="editBadge" class="badge warn hidden">REDIGERER – trykk på en takt</span></div>
+    </div>
+
+    <div id="content" class="content mode-chart">
+      <div id="chartPane" class="pane chart"><div id="chart"></div></div>
+      <div id="sheetPane" class="pane sheet"><div id="sheet"></div></div>
+    </div>
+
+    <div id="syncPanel" class="syncpanel hidden">
+      <div class="row">
+        <strong>Synk-modus</strong>
+        <span class="muted small">Opptaket styrer markøren. Rett opp her hvis takten ikke stemmer med det du hører.</span>
+        <div class="spacer"></div>
+        <button id="btnSyncClose" class="btn ghost">Ferdig</button>
+      </div>
+      <div class="row wrap">
+        <div class="grp">
+          <span class="muted small">Hele opptaket</span>
+          <button class="btn" data-shift="-0.2">−0,2 s</button>
+          <button class="btn" data-shift="-0.05">−0,05</button>
+          <button class="btn" data-shift="0.05">+0,05</button>
+          <button class="btn" data-shift="0.2">+0,2 s</button>
+        </div>
+        <div class="grp">
+          <button id="btnAnchor" class="btn">Akkurat nå = start på takt …</button>
+          <button id="btnGap" class="btn ghost">Ingen takt her (prat/pause)</button>
+        </div>
+        <div class="grp">
+          <button id="btnTapStart" class="btn">Tapp inn takter …</button>
+          <button id="btnTap" class="btn tap hidden">TAPP på slag 1</button>
+          <button id="btnTapStop" class="btn ghost hidden">Stopp tapping</button>
+        </div>
+        <div class="grp">
+          <button id="btnSyncReset" class="btn ghost danger">Tilbakestill synk</button>
+        </div>
+      </div>
+      <div id="syncHint" class="muted small"></div>
+    </div>
+
+    <footer id="transport" class="transport">
+      <button id="btnPrev" class="btn tbtn" aria-label="Forrige takt">⏮</button>
+      <button id="btnPlay" class="btn tbtn play" aria-label="Spill">▶</button>
+      <button id="btnNext" class="btn tbtn" aria-label="Neste takt">⏭</button>
+      <div class="scrub">
+        <input id="scrub" type="range" min="0" max="1000" value="0" step="1">
+        <div class="times"><span id="tCur">0:00</span><span id="recName" class="muted"></span><span id="tDur">0:00</span></div>
+      </div>
+      <button id="btnGoto" class="btn">Gå til takt</button>
+      <button id="btnLoop" class="btn ghost">⟲ Løkke</button>
+      <button id="btnSpeed" class="btn ghost">100 %</button>
+      <button id="btnRec" class="btn ghost icon" aria-label="Velg opptak">♪</button>
+    </footer>
+    <div id="noAudio" class="noaudio hidden">Ingen opptak for denne sangen. Bruk ⏮ ⏭ / pedal for å bla, eller ⋯ → «Legg til opptak».</div>
+  </section>
+</div>
+
+<!-- ===== Modal ===== -->
+<div id="modal" class="modal hidden">
+  <div class="sheetbox">
+    <div class="mhead"><strong id="mTitle"></strong><div class="spacer"></div><button id="mClose" class="btn ghost">Lukk</button></div>
+    <div id="mBody" class="mbody"></div>
+  </div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<input id="fileInput" type="file" class="hidden">
+<audio id="audio" preload="auto" playsinline></audio>
+
+<script src="app.js"></script>
+</body>
+</html>
