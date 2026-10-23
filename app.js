@@ -2,7 +2,7 @@
    Data lives in IndexedDB (imported from a .korps bundle); the app shell is cached by sw.js. */
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -307,7 +307,7 @@ function renderList() {
     return `<div class="songrow" data-id="${esc(s.id)}">
       <div class="num">${i + 1}</div>
       <div style="flex:1;min-width:0"><div class="t">${esc(s.title)}</div>
-        <div class="meta">${esc(s.part || '')} · ${esc(keyName(s.keySig, s.transpose || 0) || s.keySig || '')} · ${esc(s.timeSig || '')} · ${s.measures.length} takter</div></div>
+        <div class="meta">${esc(s.part || '')} · ${esc(keyName(s.keySig, s.transpose || 0) || s.keySig || '')} · ${esc(s.timeSig || '')} · ${s.measures.length} takter</div>${s.structure ? `<div class="struct">${esc(s.structure)}</div>` : ''}</div>
       <div class="tags">${tr}${r ? `<span class="tag ${synced ? 'ok' : 'warn'}">${r} lydspor${synced ? ' ✓' : ''}</span>` : '<span class="tag">uten lyd</span>'}${s.edited ? '<span class="tag warn">redigert</span>' : ''}</div>
       <div class="mv"><button class="btn ghost" data-mv="-1">▲</button><button class="btn ghost" data-mv="1">▼</button></div>
     </div>`;
@@ -538,7 +538,7 @@ function measureHTML(m, song, first) {
   else chords = '<span class="c hold">%</span>';
   const pill = m.sec ? `<span class="mk sec" style="background:${m._color}">${esc(m.sec)}${m.mark ? ' · ' + esc(m.mark) : ''}</span>`
     : m.mark ? `<span class="mk" style="background:${m._color || 'var(--accent)'}">${esc(m.mark)}</span>` : '';
-  return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}" data-n="${m.n}" style="--sc:${m._color || 'transparent'}">
+  return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}${(m.chords || []).length >= 3 ? ' many' : ''}" data-n="${m.n}" style="--sc:${m._color || 'transparent'}">
     <span class="mn">${m.n}</span>${pill}
     <div class="cs">${chords}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
 }
@@ -680,7 +680,7 @@ function focusMeasureHTML(s, k, j) {
   } else if (m.rest) cs = '<span class="c">–</span>';
   else if (j === 0) { const held = chordAt(s, k); cs = `<span class="c carry">${held ? chordHTML(held, s) : '%'}</span>`; }
   else cs = '<span class="c hold">%</span>';
-  return `<div class="fm${m.rest ? ' rest' : ''}" data-k0="${k}" data-k1="${k}" style="--sc:${m._color || 'var(--line)'}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
+  return `<div class="fm${m.rest ? ' rest' : ''}${(m.chords || []).length >= 3 ? ' many' : ''}" data-k0="${k}" data-k1="${k}" style="--sc:${m._color || 'var(--line)'}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
     <div class="cs">${cs}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
 }
 function focusLineHTML(s, ln, li, cur) {
@@ -1237,6 +1237,8 @@ function editMeasure(n) {
       <div class="quick">${quick.map(q => `<button class="btn ghost" data-q="${esc(q)}">${esc(q)}</button>`).join('')}<button class="btn ghost" data-q=" ">mellomrom</button><button class="btn ghost" data-q=" . ">· slag</button></div>
     </div>
     <div class="row2">
+      <div class="field" style="flex:1"><label>Del starter (Vers, Refreng …)</label><input type="text" id="eSec" list="secNames" value="${esc(m.sec || '')}">
+        <datalist id="secNames">${['Intro', 'Vers', 'Pre-refreng', 'Refreng', 'Bro', 'Solo', 'Mellomspill', 'Outro', 'Coda'].map(x => `<option value="${x}">`).join('')}</datalist></div>
       <div class="field" style="flex:1"><label>Merke (A, B, segno …)</label><input type="text" id="eMk" value="${esc(m.mark || '')}"></div>
       <div class="field" style="flex:2"><label>Tekst (D.S., Coda, rit. …)</label><input type="text" id="eTx" value="${esc(m.text || '')}"></div>
     </div>
@@ -1258,7 +1260,7 @@ function editMeasure(n) {
       const ts = $('#eTs', body).value.trim();
       const beats = beatsOf(ts || m._ts);
       m.chords = textToChords(inp.value, beats).map(([c, b]) => [normChord(c), b]);
-      m.mark = $('#eMk', body).value.trim() || undefined; m.text = $('#eTx', body).value.trim() || undefined;
+      m.mark = $('#eMk', body).value.trim() || undefined; m.sec = $('#eSec', body).value.trim() || undefined; m.text = $('#eTx', body).value.trim() || undefined;
       m.rest = $('#eRest', body).checked || undefined; m.ts = ts || undefined;
       await saveSong(s, true); renderChart(); renderRoadmap(); S.focusLi = null; updateNow(true);
     };

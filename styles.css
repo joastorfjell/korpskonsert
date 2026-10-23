@@ -267,3 +267,6 @@ sup.q{font-size:.55em;font-weight:600;vertical-align:.7em;letter-spacing:-.02em}
 #btnMetro.on{background:var(--accent2);border-color:var(--accent2);color:#fff}
 @media (orientation:portrait){ .transport{flex-wrap:wrap} .transport .scrub{flex-basis:100%;order:10} }
 .m .mk{white-space:nowrap;max-width:70%;overflow:hidden;text-overflow:ellipsis}
+.songrow .struct{font-size:13px;color:var(--accent2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fm.many .c,.fl.now .fm.many .c{font-size:calc(28px * var(--fs))}
+.m.many .c{font-size:calc(22px * var(--fs))}
