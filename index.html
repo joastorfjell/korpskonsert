@@ -42,6 +42,7 @@
         <div id="songSub" class="sub"></div>
       </div>
       <div class="seg" id="modeSeg">
+        <button data-mode="focus">Fokus</button>
         <button data-mode="chart" class="on">Besifring</button>
         <button data-mode="split">Delt</button>
         <button data-mode="sheet">Noter</button>
@@ -58,7 +59,18 @@
       <div class="nowcell info"><span id="transBadge" class="badge hidden"></span><span id="editBadge" class="badge warn hidden">REDIGERER – trykk på en takt</span></div>
     </div>
 
+    <div id="roadmap" class="roadmap hidden"></div>
+
     <div id="content" class="content mode-chart">
+      <div id="focusPane" class="pane focus">
+        <div class="fnow">
+          <div class="fpos"><span id="fMark" class="fmark hidden"></span><span class="lbl">Takt</span><span id="fMeasure">–</span><span id="fRep" class="rep"></span></div>
+          <div class="fcur"><span class="lbl">Nå</span><span id="fNow" class="fchord">–</span><div id="fBeats" class="beats"></div></div>
+          <div class="fnext"><span class="lbl">Neste</span><span id="fNext" class="fchord">–</span><span id="fNextIn" class="rep"></span></div>
+        </div>
+        <div id="fLane" class="lane"></div>
+        <div id="fText" class="ftext"></div>
+      </div>
       <div id="chartPane" class="pane chart"><div id="chart"></div></div>
       <div id="sheetPane" class="pane sheet"><div id="sheet"></div></div>
     </div>
@@ -105,7 +117,7 @@
       <button id="btnGoto" class="btn">Gå til takt</button>
       <button id="btnLoop" class="btn ghost">⟲ Løkke</button>
       <button id="btnSpeed" class="btn ghost">100 %</button>
-      <button id="btnRec" class="btn ghost icon" aria-label="Velg opptak">♪</button>
+      <button id="btnRec" class="btn trackbtn" aria-label="Velg lydspor"><span class="ti">♪</span><span id="trackName">Lydspor</span></button>
     </footer>
     <div id="noAudio" class="noaudio hidden">Ingen opptak for denne sangen. Bruk ⏮ ⏭ / pedal for å bla, eller ⋯ → «Legg til opptak».</div>
   </section>

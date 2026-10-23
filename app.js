@@ -2,7 +2,7 @@
    Data lives in IndexedDB (imported from a .korps bundle); the app shell is cached by sw.js. */
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -140,10 +140,41 @@ function prep(song) {
     }
   });
   song._ev = ev;
+  // sections in performance order: start, rehearsal mark, or a jump in the form (repeat, D.S., coda)
+  const secs = [], secOf = [];
+  exp.forEach((n, k) => {
+    const m = byN.get(n), jump = k > 0 && byN.get(exp[k - 1])._i + 1 !== m._i;
+    if (!k || m.mark || jump) secs.push({ k0: k, k1: k, n0: n, n1: n, label: m.mark || '', jump });
+    const c = secs[secs.length - 1]; c.k1 = k; c.n1 = n;
+  });
+  // long unmarked stretches (charts without rehearsal letters) are split into 8-measure chunks
+  for (let i = 0; i < secs.length; i++) {
+    const c = secs[i];
+    if (c.k1 - c.k0 + 1 > 16) secs.splice(i + 1, 0, { k0: c.k0 + 8, k1: c.k1, n0: exp[c.k0 + 8], n1: c.n1, label: '' }), c.k1 = c.k0 + 7, c.n1 = exp[c.k1];
+  }
+  secs.forEach((c, i) => { for (let k = c.k0; k <= c.k1; k++) secOf[k] = i; });
+  song._secs = secs; song._secOf = secOf;
+  // lines for the focus view: 4 measures in play order, never across sections; runs of 3+ rests become one line
+  const isRest = k => { const m = byN.get(exp[k]); return m.rest && !(m.chords && m.chords.length); };
+  const lines = [], lineOf = [];
+  for (const sec of secs) {
+    let cur = null, first = true;
+    const push = ln => { ln.sec = sec; ln.first = first; first = false; ln.ks.forEach(k => lineOf[k] = lines.length); lines.push(ln); };
+    const flush = () => { if (cur) push(cur); cur = null; };
+    for (let k = sec.k0; k <= sec.k1;) {
+      let j = k; while (j <= sec.k1 && isRest(j)) j++;
+      if (j - k >= 3) { flush(); push({ rest: true, ks: Array.from({ length: j - k }, (_, i) => k + i) }); k = j; continue; }
+      if (!cur) cur = { ks: [] };
+      cur.ks.push(k++); if (cur.ks.length === 4) flush();
+    }
+    flush();
+  }
+  song._lines = lines; song._lineOf = lineOf;
   // carried chord per printed measure (for display)
   let carry = null;
   for (const m of song.measures) { m._carry = carry; if (m.chords && m.chords.length) carry = m.chords[m.chords.length - 1][0]; }
 }
+function chordAt(song, pos) { let c = null; for (const e of song._ev) { if (e.pos <= pos + 1e-6) c = e.c; else break; } return c; }
 function occurrences(song, n) { const r = []; song._exp.forEach((x, k) => { if (x === n) r.push(k); }); return r; }
 function rec(song) { return (song.recordings || [])[song.recIndex || 0] || null; }
 
@@ -383,7 +414,7 @@ function openSettings() {
       const k = sel.dataset.s; let v = sel.value;
       if (v === 'true') v = true; else if (v === 'false') v = false; else if (!isNaN(+v)) v = +v;
       settings[k] = v; saveSettings();
-      if (S.song) { renderChart(); renderSheet(); updateNow(true); }
+      if (S.song) { renderChart(); renderSheet(); S.focusLi = null; S.curH = S.nxtH = null; updateNow(true); }
     });
     $('#sExport', body).onclick = exportEdits;
     $('#sImport', body).onclick = () => { closeModal(); pickFile('', importFile); };
@@ -398,11 +429,11 @@ function openSettings() {
 async function openSong(id) {
   const song = S.songs.find(s => s.id === id); if (!song) return;
   prep(song);
-  S.song = song; S.pos = null; S.cursor = 0; S.loop = null; S.loopPick = null; S.lastMeasureKey = null;
+  S.song = song; S.pos = null; S.cursor = 0; S.loop = null; S.loopPick = null; S.lastMeasureKey = null; S.focusLi = null; S.curH = S.nxtH = null;
   $('#listView').classList.add('hidden'); $('#songView').classList.remove('hidden');
   setEditing(false); setSyncing(false);
-  renderHeader(); renderChart(); await renderSheet(); await loadAudio();
-  setMode(song.lastMode || (song.measures.some(m => m.chords && m.chords.length) ? 'chart' : 'sheet'));
+  renderHeader(); renderChart(); renderRoadmap(); await renderSheet(); await loadAudio();
+  setMode(song.viewMode || (song.measures.some(m => m.chords && m.chords.length) ? 'focus' : 'sheet'));
   updateNow(true);
   wake(true);
 }
@@ -428,7 +459,9 @@ $$('#modeSeg button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 function setMode(m) {
   S.mode = m; $$('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('#content').className = 'content mode-' + m;
-  if (S.song) { S.song.lastMode = m; DB.put('songs', strip(S.song)); }
+  $('#nowStrip').classList.toggle('hidden', m === 'focus');
+  if (S.song) { S.song.viewMode = m; DB.put('songs', strip(S.song)); }
+  S.focusLi = null;
   requestAnimationFrame(() => { S.lastMeasureKey = null; updateNow(true); });
 }
 
@@ -450,7 +483,7 @@ function chartRows(song) {
   for (let i = 0; i < ms.length; i += per) rows.push(ms.slice(i, i + per));
   return rows;
 }
-function measureHTML(m, song) {
+function measureHTML(m, song, first) {
   let chords = '';
   if (m.chords && m.chords.length) {
     const bs = m._beats;
@@ -463,8 +496,9 @@ function measureHTML(m, song) {
     const lead = m.chords[0][1] - 1;
     if (lead > 0.01) chords = `<span class="c carry" style="flex:${lead} 1 0">${m._carry ? chordHTML(m._carry, song) : ''}</span>` + chords;
   } else if (m.rest) chords = '<span class="c">–</span>';
-  else chords = `<span class="c carry">${m._carry ? chordHTML(m._carry, song) : '%'}</span>`;
-  return `<div class="m${m.rest ? ' rest' : ''}" data-n="${m.n}">
+  else if (first && m._carry) chords = `<span class="c carry">${chordHTML(m._carry, song)}</span>`;
+  else chords = '<span class="c hold">%</span>';
+  return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}" data-n="${m.n}">
     <span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
     <div class="cs">${chords}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
 }
@@ -472,11 +506,26 @@ function renderChart() {
   const s = S.song; if (!s) return;
   const rows = chartRows(s);
   const maxLen = Math.max(4, ...rows.map(r => r.length));
+  const isRest = m => m.rest && !(m.chords && m.chords.length) && !m.mark && !m.text;
   $('#chart').innerHTML = rows.map(r => {
     const pad = settings.perRow === 'sheet' ? '' : '<div style="flex:1 1 0"></div>'.repeat(maxLen - r.length);
-    return `<div class="sys">${r.map(m => measureHTML(m, s)).join('')}${pad}</div>`;
+    const out = [];
+    for (let i = 0; i < r.length;) {
+      // two or more rest measures in a row collapse into one block (not while editing: every measure must be tappable)
+      let j = i; while (!S.editing && j < r.length && isRest(r[j])) j++;
+      if (j - i >= 2) {
+        const run = r.slice(i, j);
+        out.push(`<div class="m rest run" style="flex:${Math.min(run.length, 2)} 1 0" data-n="${run[0].n}" data-ns="${run.map(m => m.n).join(',')}">
+          <span class="mn">${run[0].n}–${run[run.length - 1].n}</span><div class="cs"><span class="c rl">Pause · ${run.length} takter</span></div><div class="prog"></div></div>`);
+        i = j; continue;
+      }
+      out.push(measureHTML(r[i], s, i === 0)); i++;
+    }
+    return `<div class="sys">${out.join('')}${pad}</div>`;
   }).join('') + (s.notes ? `<div class="muted small" style="margin-top:16px;white-space:pre-wrap">${esc(s.notes)}</div>` : '');
   $('#chart').classList.toggle('editing', S.editing);
+  S.mEl = new Map(); S.chartRi = null;
+  $$('#chart .m').forEach(el => (el.dataset.ns || el.dataset.n).split(',').forEach(n => S.mEl.set(+n, el)));
   S.lastMeasureKey = null; markLoop();
 }
 $('#chart').addEventListener('click', e => {
@@ -534,33 +583,138 @@ function updateNow(force) {
   // measure display
   if (force || key !== S.lastMeasureKey) {
     S.lastMeasureKey = key;
-    $('#nowMeasure').textContent = n == null ? '–' : n;
-    if (n != null) {
-      const occ = occurrences(s, n), oi = occ.indexOf(k);
-      $('#nowRep').textContent = occ.length > 1 ? `gang ${oi + 1} av ${occ.length}` : '';
-    } else $('#nowRep').textContent = '';
+    $('#nowMeasure').textContent = $('#fMeasure').textContent = n == null ? '–' : n;
+    let rep = '';
+    if (n != null) { const occ = occurrences(s, n), oi = occ.indexOf(k); if (occ.length > 1) rep = `gang ${oi + 1} av ${occ.length}`; }
+    $('#nowRep').textContent = $('#fRep').textContent = rep;
     $$('#chart .m.cur').forEach(e => { e.classList.remove('cur'); $('.prog', e).style.width = 0; });
     if (n != null) {
-      const el = $(`#chart .m[data-n="${CSS.escape(String(n))}"]`);
-      if (el) { el.classList.add('cur'); scrollIntoViewIfNeeded($('#chartPane'), el); }
+      const el = S.mEl && S.mEl.get(n);
+      if (el) {
+        el.classList.add('cur'); scrollIntoViewIfNeeded($('#chartPane'), el);
+        const rows = $$('#chart .sys'), ri = rows.indexOf(el.parentNode);
+        if (ri !== S.chartRi) { S.chartRi = ri; rows.forEach((r, i) => r.classList.toggle('past', i < ri)); }
+      }
     }
     highlightSheet(n);
+    renderFocus(k);
+    markRoadmap(k);
   }
   // beat progress
-  if (n != null && S.pos != null) { const el = $('#chart .m.cur .prog'); if (el) el.style.width = ((p - k) * 100).toFixed(1) + '%'; }
+  if (n != null && S.pos != null) {
+    const el = $('#chart .m.cur .prog');
+    if (el) { const ns = el.parentNode.dataset.ns, f = ns ? (ns.split(',').indexOf(String(n)) + p - k) / ns.split(',').length : p - k; el.style.width = (f * 100).toFixed(1) + '%'; }
+    const fe = $('#fLane .fm.cur .prog');
+    if (fe) { const a = +fe.parentNode.dataset.k0, b = +fe.parentNode.dataset.k1; fe.style.width = ((p - a) / (b - a + 1) * 100).toFixed(1) + '%'; }
+  }
+  updateBeats(s, p, k);
   // now / next chord
   const ev = s._ev; let cur = null, nxt = null;
   if (p != null) {
     let i = -1; for (let j = 0; j < ev.length; j++) { if (ev[j].pos <= p + 1e-6) i = j; else break; }
     cur = i >= 0 ? ev[i] : null; nxt = ev[i + 1] || null;
   }
-  $('#nowChord').innerHTML = cur ? (cur.c ? chordHTML(cur.c, s) : 'N.C.') : '–';
-  $('#nextChord').innerHTML = nxt ? (nxt.c ? chordHTML(nxt.c, s) : 'N.C.') : '–';
+  const curH = cur ? (cur.c ? chordHTML(cur.c, s) : 'N.C.') : '–', nxtH = nxt ? (nxt.c ? chordHTML(nxt.c, s) : 'N.C.') : '–';
+  if (curH !== S.curH) { S.curH = curH; $('#nowChord').innerHTML = $('#fNow').innerHTML = curH; }
+  if (nxtH !== S.nxtH) { S.nxtH = nxtH; $('#nextChord').innerHTML = $('#fNext').innerHTML = nxtH; }
+  let nin = '';
   if (nxt && p != null) {
     const beats = beatsBetween(s, p, nxt.pos);
-    $('#nextIn').textContent = beats < 0.05 ? '' : beats <= 8 ? `om ${Math.max(1, Math.round(beats))} slag` : `takt ${s._exp[Math.floor(nxt.pos)]}`;
-  } else $('#nextIn').textContent = '';
+    nin = beats < 0.05 ? '' : beats <= 8 ? `om ${Math.max(1, Math.round(beats))} slag` : `takt ${s._exp[Math.floor(nxt.pos)]}`;
+  }
+  $('#nextIn').textContent = $('#fNextIn').textContent = nin;
 }
+
+/* ---- focus view: big now/next + the current line and the two after it, in play order ---- */
+function focusMeasureHTML(s, k, j) {
+  const m = s._byN.get(s._exp[k]);
+  let cs;
+  if (m.chords && m.chords.length) {
+    cs = m.chords.map(([c, b], i) => {
+      const nb = i + 1 < m.chords.length ? m.chords[i + 1][1] : m._beats + 1;
+      return `<span class="c${/\?$/.test(c) ? ' unsure' : ''}" style="flex:${Math.max(0.5, nb - b)} 1 0">${chordHTML(c, s)}</span>`;
+    }).join('');
+    const lead = m.chords[0][1] - 1, held = chordAt(s, k - 0.001);
+    if (lead > 0.01) cs = `<span class="c carry" style="flex:${lead} 1 0">${held ? chordHTML(held, s) : ''}</span>` + cs;
+  } else if (m.rest) cs = '<span class="c">–</span>';
+  else if (j === 0) { const held = chordAt(s, k); cs = `<span class="c carry">${held ? chordHTML(held, s) : '%'}</span>`; }
+  else cs = '<span class="c hold">%</span>';
+  return `<div class="fm${m.rest ? ' rest' : ''}" data-k0="${k}" data-k1="${k}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
+    <div class="cs">${cs}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
+}
+function focusLineHTML(s, ln, li, cur) {
+  const sc = ln.sec, lbl = !ln.first ? '' : `<span class="fsec">${sc.jump ? '↺ ' : ''}${esc(sc.label || (sc.jump ? 'tilbake til takt ' : 'takt ') + sc.n0)}</span>`;
+  let body;
+  if (ln.rest) {
+    const a = s._exp[ln.ks[0]], b = s._exp[ln.ks[ln.ks.length - 1]];
+    body = `<div class="fm rest restline" data-k0="${ln.ks[0]}" data-k1="${ln.ks[ln.ks.length - 1]}"><span class="mn">${a}–${b}</span>
+      <div class="cs"><span class="c rl">Pause · ${ln.ks.length} takter</span><span class="rleft"></span></div><div class="prog"></div></div>`;
+  } else body = ln.ks.map((k, j) => focusMeasureHTML(s, k, j)).join('') + '<div class="fm pad"></div>'.repeat(4 - ln.ks.length);
+  return `<div class="fl${cur ? ' now' : ''}" data-li="${li}">${lbl}<div class="flm">${body}</div></div>`;
+}
+function renderFocus(k) {
+  const s = S.song; if (S.mode !== 'focus' || !s) return;
+  const li = k == null ? 0 : s._lineOf[k];
+  if (li !== S.focusLi) {
+    S.focusLi = li;
+    // as many lines as fit under the now/next panel
+    const nl = clamp(1 + Math.floor(($('#fLane').clientHeight - 104 * settings.fs - 32) / (84 * settings.fs + 26)), 2, 8);
+    const out = [];
+    for (let i = li; i < Math.min(s._lines.length, li + nl); i++) out.push(focusLineHTML(s, s._lines[i], i, i === li));
+    if (li + nl >= s._lines.length) out.push('<div class="fend">Slutt</div>');
+    $('#fLane').innerHTML = out.join('');
+  }
+  $$('#fLane .fm.cur').forEach(e => { e.classList.remove('cur'); const pr = $('.prog', e); if (pr) pr.style.width = 0; });
+  let txt = '';
+  if (k != null) {
+    const e = $$('#fLane .fm[data-k0]').find(e => +e.dataset.k0 <= k && k <= +e.dataset.k1);
+    if (e) {
+      e.classList.add('cur');
+      const left = $('.rleft', e); if (left) left.textContent = `${+e.dataset.k1 - k + 1} igjen`;
+    }
+    const sec = s._secs[s._secOf[k]];
+    $('#fMark').textContent = sec.label; $('#fMark').classList.toggle('hidden', !sec.label);
+    for (let i = k; i <= k + 2 && i < s._exp.length; i++) {
+      const m = s._byN.get(s._exp[i]);
+      if (m.text) { txt = i === k ? esc(m.text) : `Snart (takt ${m.n}): ${esc(m.text)}`; break; }
+    }
+  } else $('#fMark').classList.add('hidden');
+  $('#fText').innerHTML = txt;
+}
+function updateBeats(s, p, k) {
+  if (S.mode !== 'focus') return;
+  const m = k == null ? null : s._byN.get(s._exp[k]);
+  const nb = m ? m._beats : 0, b = m && S.pos != null ? Math.floor((p - k) * nb) : -1;
+  const key = nb + '|' + b;
+  if (key === S.beatKey) return; S.beatKey = key;
+  $('#fBeats').innerHTML = Array.from({ length: nb }, (_, i) => `<i class="${i === b ? 'on' : i < b ? 'done' : ''}"></i>`).join('');
+}
+$('#fLane').addEventListener('click', e => {
+  const el = e.target.closest('.fm[data-k0]'); if (!el || !S.song) return;
+  const k = +el.dataset.k0;
+  if (S.editing || S.loopPick || (S.syncing && S.anchorPending)) { onMeasureTap(S.song._exp[k]); return; }
+  gotoExp(k);
+});
+
+/* ---- roadmap: sections in performance order ---- */
+function renderRoadmap() {
+  const s = S.song, el = $('#roadmap');
+  S.secI = null;
+  if (!s || s._secs.length < 2) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.innerHTML = s._secs.map((c, i) => c.label
+    ? `<button class="sec" data-i="${i}"><b>${c.jump ? '↺ ' : ''}${esc(c.label)}</b><span>${c.n0}–${c.n1}</span></button>`
+    : `<button class="sec" data-i="${i}"><b>${c.jump ? '↺ ' : ''}${c.n0}</b><span>–${c.n1}</span></button>`).join('');
+}
+function markRoadmap(k) {
+  const s = S.song; if (!s || !s._secs.length) return;
+  const i = k == null ? -1 : s._secOf[k]; if (i === S.secI) return; S.secI = i;
+  const bs = $$('#roadmap .sec'); bs.forEach((b, j) => { b.classList.toggle('on', j === i); b.classList.toggle('past', j < i); });
+  const b = bs[i], r = $('#roadmap');
+  if (b && r.offsetParent) r.scrollTo({ left: b.offsetLeft - r.clientWidth / 3, behavior: 'smooth' });
+}
+$('#roadmap').addEventListener('click', e => { const b = e.target.closest('.sec'); if (b && S.song) gotoExp(S.song._secs[+b.dataset.i].k0); });
+function gotoExp(k) { const s = S.song, n = s._exp[k]; return gotoMeasure(n, occurrences(s, n).indexOf(k)); }
 function beatsBetween(s, a, b) {
   let tot = 0, k = Math.floor(a);
   while (k < b && k < s._exp.length) { const m = s._byN.get(s._exp[k]); const lo = Math.max(a, k), hi = Math.min(b, k + 1); tot += (hi - lo) * m._beats; k++; }
@@ -600,13 +754,14 @@ async function loadAudio() {
   $('#transport').classList.toggle('noaud', !has);
   $('#noAudio').classList.toggle('hidden', has);
   $('#btnSync').classList.toggle('hidden', !has);
+  $('#trackName').textContent = has ? (r.short || r.name) : 'Legg til lyd';
   if (!has) { audio.removeAttribute('src'); audio.load(); $('#recName').textContent = ''; S.pos = null; return; }
   const f = await DB.get('files', r.fileId);
   if (!f) { toast('Fant ikke lydfila'); return; }
   S.objUrl = URL.createObjectURL(f.blob);
   audio.src = S.objUrl; audio.load();
   audio.playbackRate = S.rate; try { audio.preservesPitch = true; audio.webkitPreservesPitch = true; } catch (e) { }
-  $('#recName').textContent = r.name + ((s.recordings.length > 1) ? ` (${(s.recIndex || 0) + 1}/${s.recordings.length})` : '') + (r.map && r.map.length ? '' : ' · ikke synket');
+  $('#recName').textContent = (r.group ? r.group + ': ' : '') + r.name + (r.map && r.map.length ? '' : ' · ikke synket');
 }
 function whenReady() {
   return audio.readyState >= 1 ? Promise.resolve() : new Promise(res => { const f = () => { audio.removeEventListener('loadedmetadata', f); res(); }; audio.addEventListener('loadedmetadata', f); });
@@ -724,13 +879,33 @@ function markLoop() {
   if (S.loop) $$('#chart .m').forEach(e => { const n = +e.dataset.n; if (n >= S.loop.a && n <= S.loop.b) e.classList.add('inloop'); });
 }
 /* recordings */
-$('#btnRec').onclick = async () => {
-  const s = S.song; const recs = s.recordings || [];
-  const i = await choose('Opptak', recs.map((r, i) => `${esc(r.name)}${i === (s.recIndex || 0) ? '  ✓' : ''}`).concat(['+ Legg til opptak fra Filer …']));
-  if (i < 0) return;
-  if (i === recs.length) return addRecording();
-  s.recIndex = i; await DB.put('songs', strip(s)); await loadAudio(); onTime();
+$('#btnRec').onclick = () => {
+  const s = S.song, recs = s.recordings || [], cur = s.recIndex || 0;
+  if (!recs.length) return addRecording();
+  modal('Lydspor', `<div class="tracks">${recs.map((r, i) => `<button class="track${i === cur ? ' on' : ''}" data-i="${i}">
+      <span class="tg">${esc(r.group || 'Opptak')}</span><span class="tn">${esc(r.name)}</span>
+      ${r.desc ? `<span class="td">${esc(r.desc)}</span>` : ''}
+      <span class="tt">${r.map && r.map.length ? '<span class="tag ok">følger taktene ✓</span>' : '<span class="tag warn">ikke synket</span>'}</span></button>`).join('')}</div>
+    <div class="row2" style="margin-top:12px"><button class="btn ghost" id="tAdd">+ Legg til lydspor fra Filer …</button></div>
+    <div class="hint" style="margin-top:8px">Bytter du spor mens musikken går, fortsetter avspillingen fra samme takt (hvis takten finnes i det nye sporet).</div>`, body => {
+    $$('.track', body).forEach(b => b.onclick = () => { closeModal(); switchTrack(+b.dataset.i); });
+    $('#tAdd', body).onclick = () => { closeModal(); addRecording(); };
+  });
 };
+async function switchTrack(i) {
+  const s = S.song; if (i === (s.recIndex || 0)) return;
+  const playing = !audio.paused, p = S.pos;
+  s.recIndex = i; DB.put('songs', strip(s));
+  await loadAudio();
+  const r = rec(s);
+  if (p != null && r.map && r.map.length) {
+    await whenReady();
+    const ts = timesAt(r.map, p);
+    if (ts.length) audio.currentTime = ts[0]; else toast('Takten finnes ikke i dette sporet – starter fra begynnelsen');
+  }
+  if (playing) audio.play().catch(() => { });
+  onTime();
+}
 function addRecording() {
   pickFile('audio/*', async f => {
     const s = S.song, id = 'rec-' + Date.now();
@@ -752,6 +927,11 @@ document.addEventListener('keydown', e => {
 function stepRow(d) {
   // pedal: move cursor by one system (line)
   const s = S.song, k = Math.floor(curExpPos() || 0), n = s._exp[k];
+  if (S.mode === 'focus') {
+    const nk = s._lines[clamp(s._lineOf[k] + d, 0, s._lines.length - 1)].ks[0];
+    if (!audio.paused) { gotoExp(nk); return; }
+    S.cursor = nk; S.pos = null; updateNow(true); return;
+  }
   const rows = chartRows(s); const ri = rows.findIndex(r => r.some(m => m.n === n));
   const target = rows[clamp(ri + d, 0, rows.length - 1)][0].n;
   const occ = occurrences(s, target); const nk = d > 0 ? (occ.find(x => x > k) ?? occ[0]) : ([...occ].reverse().find(x => x < k) ?? occ[0]);
@@ -768,6 +948,7 @@ async function wake(on) {
   } catch (e) { }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.song) wake(true); });
+window.addEventListener('resize', () => { if (S.song && S.mode === 'focus') { S.focusLi = null; updateNow(true); } });
 
 /* ================= Editing ================= */
 $('#btnEdit').onclick = () => setEditing(!S.editing);
@@ -775,6 +956,8 @@ function setEditing(on) {
   S.editing = on; $('#btnEdit').classList.toggle('on', on); $('#editBadge').classList.toggle('hidden', !on);
   $('#chart').classList.toggle('editing', on);
   if (on && S.mode === 'sheet') setMode('split');
+  if (on && S.mode === 'focus') setMode('chart');
+  if (S.song) { renderChart(); updateNow(true); }
 }
 function chordsToText(m) {
   if (!m.chords || !m.chords.length) return '';
@@ -835,7 +1018,7 @@ function editMeasure(n) {
       m.chords = textToChords(inp.value, beats).map(([c, b]) => [normChord(c), b]);
       m.mark = $('#eMk', body).value.trim() || undefined; m.text = $('#eTx', body).value.trim() || undefined;
       m.rest = $('#eRest', body).checked || undefined; m.ts = ts || undefined;
-      await saveSong(s, true); renderChart(); updateNow(true);
+      await saveSong(s, true); renderChart(); renderRoadmap(); S.focusLi = null; updateNow(true);
     };
     const idx = s.measures.indexOf(m);
     $('#eSave', body).onclick = async () => { await save(); closeModal(); };
@@ -891,7 +1074,7 @@ function songInfo() {
     $('#iT0', body).onclick = () => { tr = 0; upd(); };
     $('#iSave', body).onclick = async () => {
       Object.assign(s, { title: $('#iT', body).value.trim() || s.title, part: $('#iP', body).value.trim(), keySig: $('#iK', body).value.trim(), timeSig: $('#iTs', body).value.trim() || '4/4', notes: $('#iN', body).value, transpose: tr });
-      await saveSong(s, true); closeModal(); renderHeader(); renderChart(); updateNow(true);
+      await saveSong(s, true); closeModal(); renderHeader(); renderChart(); S.focusLi = null; S.curH = S.nxtH = null; updateNow(true);
     };
   });
 }
@@ -906,7 +1089,7 @@ function editForm() {
       const parts = $('#fF', body).value.split(/[,;]+/).map(x => x.trim()).filter(Boolean);
       const f = []; for (const p of parts) { const m = /^(-?\d+)\s*(?:-|–)\s*(-?\d+)$/.exec(p) || /^(-?\d+)$/.exec(p); if (!m) { toast('Forstår ikke «' + p + '»'); return; } f.push([+m[1], +(m[2] || m[1])]); }
       if (S.song.recordings && S.song.recordings.some(r => r.map && r.map.length) && !confirm('Endret form kan forskyve synken mot opptaket. Fortsette?')) return;
-      s.form = f; await saveSong(s, true); closeModal(); renderChart(); updateNow(true);
+      s.form = f; await saveSong(s, true); closeModal(); renderChart(); renderRoadmap(); S.focusLi = null; updateNow(true);
     };
   });
 }
