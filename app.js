@@ -2,7 +2,7 @@
    Data lives in IndexedDB (imported from a .korps bundle); the app shell is cached by sw.js. */
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -144,7 +144,7 @@ function prep(song) {
   const secs = [], secOf = [];
   exp.forEach((n, k) => {
     const m = byN.get(n), jump = k > 0 && byN.get(exp[k - 1])._i + 1 !== m._i;
-    if (!k || m.mark || jump) secs.push({ k0: k, k1: k, n0: n, n1: n, label: m.mark || '', jump });
+    if (!k || m.mark || m.sec || jump) secs.push({ k0: k, k1: k, n0: n, n1: n, label: m.mark || m.sec || '', jump });
     const c = secs[secs.length - 1]; c.k1 = k; c.n1 = n;
   });
   // long unmarked stretches (charts without rehearsal letters) are split into 8-measure chunks
@@ -272,7 +272,7 @@ function renderList() {
       <div class="num">${i + 1}</div>
       <div style="flex:1;min-width:0"><div class="t">${esc(s.title)}</div>
         <div class="meta">${esc(s.part || '')} · ${esc(keyName(s.keySig, s.transpose || 0) || s.keySig || '')} · ${esc(s.timeSig || '')} · ${s.measures.length} takter</div></div>
-      <div class="tags">${tr}${r ? `<span class="tag ${synced ? 'ok' : 'warn'}">${r} opptak${synced ? ' ✓' : ''}</span>` : '<span class="tag">uten opptak</span>'}${s.edited ? '<span class="tag warn">redigert</span>' : ''}</div>
+      <div class="tags">${tr}${r ? `<span class="tag ${synced ? 'ok' : 'warn'}">${r} lydspor${synced ? ' ✓' : ''}</span>` : '<span class="tag">uten lyd</span>'}${s.edited ? '<span class="tag warn">redigert</span>' : ''}</div>
       <div class="mv"><button class="btn ghost" data-mv="-1">▲</button><button class="btn ghost" data-mv="1">▼</button></div>
     </div>`;
   }).join('');
@@ -499,7 +499,7 @@ function measureHTML(m, song, first) {
   else if (first && m._carry) chords = `<span class="c carry">${chordHTML(m._carry, song)}</span>`;
   else chords = '<span class="c hold">%</span>';
   return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}" data-n="${m.n}">
-    <span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
+    <span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : m.sec ? `<span class="mk sec">${esc(m.sec)}</span>` : ''}
     <div class="cs">${chords}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
 }
 function renderChart() {
@@ -639,7 +639,7 @@ function focusMeasureHTML(s, k, j) {
   } else if (m.rest) cs = '<span class="c">–</span>';
   else if (j === 0) { const held = chordAt(s, k); cs = `<span class="c carry">${held ? chordHTML(held, s) : '%'}</span>`; }
   else cs = '<span class="c hold">%</span>';
-  return `<div class="fm${m.rest ? ' rest' : ''}" data-k0="${k}" data-k1="${k}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
+  return `<div class="fm${m.rest ? ' rest' : ''}" data-k0="${k}" data-k1="${k}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : m.sec ? `<span class="mk sec">${esc(m.sec)}</span>` : ''}
     <div class="cs">${cs}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
 }
 function focusLineHTML(s, ln, li, cur) {
