@@ -2,7 +2,7 @@
    Data lives in IndexedDB (imported from a .korps bundle); the app shell is cached by sw.js. */
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -140,20 +140,46 @@ function prep(song) {
     }
   });
   song._ev = ev;
-  // sections in performance order: start, rehearsal mark, or a jump in the form (repeat, D.S., coda)
+  // section in effect for every printed measure: the latest name (Vers/Refreng …) and rehearsal mark
+  let lab = '', mk = '';
+  for (const m of song.measures) {
+    if (m.sec || m.mark) { lab = m.sec || m.mark; mk = m.sec ? (m.mark || '') : ''; }
+    m._lab = lab; m._mk = mk; m._color = secColor(lab);
+  }
+  // sections in performance order: start, rehearsal mark/section name, or a jump in the form (repeat, D.S., coda)
   const secs = [], secOf = [];
   exp.forEach((n, k) => {
     const m = byN.get(n), jump = k > 0 && byN.get(exp[k - 1])._i + 1 !== m._i;
-    if (!k || m.mark || m.sec || jump) secs.push({ k0: k, k1: k, n0: n, n1: n, label: m.mark || m.sec || '', jump });
+    if (!k || m.mark || m.sec || jump) secs.push({ k0: k, k1: k, n0: n, n1: n, label: m._lab, mark: m._mk, jump });
     const c = secs[secs.length - 1]; c.k1 = k; c.n1 = n;
   });
-  // long unmarked stretches (charts without rehearsal letters) are split into 8-measure chunks
+  // long stretches are split into 8-measure chunks (continuations of the same section)
   for (let i = 0; i < secs.length; i++) {
     const c = secs[i];
-    if (c.k1 - c.k0 + 1 > 16) secs.splice(i + 1, 0, { k0: c.k0 + 8, k1: c.k1, n0: exp[c.k0 + 8], n1: c.n1, label: '' }), c.k1 = c.k0 + 7, c.n1 = exp[c.k1];
+    if (c.k1 - c.k0 + 1 > 16) secs.splice(i + 1, 0, { k0: c.k0 + 8, k1: c.k1, n0: exp[c.k0 + 8], n1: c.n1, label: c.label, mark: c.mark, cont: true }), c.k1 = c.k0 + 7, c.n1 = exp[c.k1];
   }
+  // number repeated section names in play order (Refreng 1, Refreng 2 …)
+  const total = {}, seen = {};
+  secs.forEach(c => { if (c.label && !c.cont) total[c.label] = (total[c.label] || 0) + 1; });
+  secs.forEach(c => {
+    if (c.label && !c.cont) seen[c.label] = (seen[c.label] || 0) + 1;
+    const num = c.label && total[c.label] > 1 && !/^(intro|outro|coda)/i.test(c.label) ? ' ' + seen[c.label] : '';
+    c.name = c.label ? c.label + num : 'takt ' + c.n0;
+    c.color = secColor(c.label);
+  });
   secs.forEach((c, i) => { for (let k = c.k0; k <= c.k1; k++) secOf[k] = i; });
   song._secs = secs; song._secOf = secOf;
+  // logical parts (8-measure continuation chunks merged back) for the roadmap and "3/8 i delen"
+  const lsecs = [], lsecOf = [];
+  secs.forEach(c => {
+    const l = lsecs[lsecs.length - 1];
+    if (c.cont && l) { l.k1 = c.k1; l.n1 = c.n1; }
+    else if (l && c.jump && c.label && c.label === l.label) { l.k1 = c.k1; l.n1 = Math.max(l.n1, c.n1); l.reps = (l.reps || 1) + 1; }   // same part repeated (4x vamp)
+    else lsecs.push(Object.assign({}, c));
+  });
+  lsecs.forEach(c => { if (c.reps) c.name += ` ×${c.reps}`; });
+  lsecs.forEach((c, i) => { for (let k = c.k0; k <= c.k1; k++) lsecOf[k] = i; });
+  song._lsecs = lsecs; song._lsecOf = lsecOf;
   // lines for the focus view: 4 measures in play order, never across sections; runs of 3+ rests become one line
   const isRest = k => { const m = byN.get(exp[k]); return m.rest && !(m.chords && m.chords.length); };
   const lines = [], lineOf = [];
@@ -173,6 +199,16 @@ function prep(song) {
   // carried chord per printed measure (for display)
   let carry = null;
   for (const m of song.measures) { m._carry = carry; if (m.chords && m.chords.length) carry = m.chords[m.chords.length - 1][0]; }
+}
+/* one color per section type, so repeats of the same part look the same everywhere */
+const SEC_COLORS = [[/^intro/i, '#8da2c0'], [/^vers/i, '#4fb3ff'], [/^pre/i, '#2dd4bf'], [/^refr|^chorus/i, '#ffb627'], [/^bro|^bridge/i, '#c084fc'],
+  [/^solo|^instr|^mellom/i, '#4cd17a'], [/^outro|^coda|^slutt|^ending/i, '#9ca3af']];
+const SEC_PALETTE = ['#f472b6', '#60a5fa', '#fbbf24', '#34d399', '#a78bfa', '#fb923c', '#22d3ee', '#f87171'];
+function secColor(label) {
+  if (!label) return '';
+  for (const [rx, c] of SEC_COLORS) if (rx.test(label)) return c;
+  let h = 0; for (const ch of label) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return SEC_PALETTE[h % SEC_PALETTE.length];
 }
 function chordAt(song, pos) { let c = null; for (const e of song._ev) { if (e.pos <= pos + 1e-6) c = e.c; else break; } return c; }
 function occurrences(song, n) { const r = []; song._exp.forEach((x, k) => { if (x === n) r.push(k); }); return r; }
@@ -433,12 +469,14 @@ async function openSong(id) {
   $('#listView').classList.add('hidden'); $('#songView').classList.remove('hidden');
   setEditing(false); setSyncing(false);
   renderHeader(); renderChart(); renderRoadmap(); await renderSheet(); await loadAudio();
+  setBpm(estimateBpm(song)); $('#btnMetro').classList.toggle('on', !!settings.metro);
+  setSource(song.liveMode != null ? song.liveMode : !rec(song));
   setMode(song.viewMode || (song.measures.some(m => m.chords && m.chords.length) ? 'focus' : 'sheet'));
   updateNow(true);
   wake(true);
 }
 function closeSong() {
-  audio.pause(); wake(false);
+  liveStop(); audio.pause(); wake(false);
   if (S.objUrl) { URL.revokeObjectURL(S.objUrl); S.objUrl = null; }
   S.pageUrls.forEach(u => URL.revokeObjectURL(u)); S.pageUrls = [];
   S.song = null; $('#songView').classList.add('hidden'); $('#listView').classList.remove('hidden'); renderList();
@@ -498,8 +536,10 @@ function measureHTML(m, song, first) {
   } else if (m.rest) chords = '<span class="c">–</span>';
   else if (first && m._carry) chords = `<span class="c carry">${chordHTML(m._carry, song)}</span>`;
   else chords = '<span class="c hold">%</span>';
-  return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}" data-n="${m.n}">
-    <span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : m.sec ? `<span class="mk sec">${esc(m.sec)}</span>` : ''}
+  const pill = m.sec ? `<span class="mk sec" style="background:${m._color}">${esc(m.sec)}${m.mark ? ' · ' + esc(m.mark) : ''}</span>`
+    : m.mark ? `<span class="mk" style="background:${m._color || 'var(--accent)'}">${esc(m.mark)}</span>` : '';
+  return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}" data-n="${m.n}" style="--sc:${m._color || 'transparent'}">
+    <span class="mn">${m.n}</span>${pill}
     <div class="cs">${chords}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
 }
 function renderChart() {
@@ -608,6 +648,7 @@ function updateNow(force) {
     if (fe) { const a = +fe.parentNode.dataset.k0, b = +fe.parentNode.dataset.k1; fe.style.width = ((p - a) / (b - a + 1) * 100).toFixed(1) + '%'; }
   }
   updateBeats(s, p, k);
+  roadmapProgress(p);
   // now / next chord
   const ev = s._ev; let cur = null, nxt = null;
   if (p != null) {
@@ -639,11 +680,12 @@ function focusMeasureHTML(s, k, j) {
   } else if (m.rest) cs = '<span class="c">–</span>';
   else if (j === 0) { const held = chordAt(s, k); cs = `<span class="c carry">${held ? chordHTML(held, s) : '%'}</span>`; }
   else cs = '<span class="c hold">%</span>';
-  return `<div class="fm${m.rest ? ' rest' : ''}" data-k0="${k}" data-k1="${k}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : m.sec ? `<span class="mk sec">${esc(m.sec)}</span>` : ''}
+  return `<div class="fm${m.rest ? ' rest' : ''}" data-k0="${k}" data-k1="${k}" style="--sc:${m._color || 'var(--line)'}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
     <div class="cs">${cs}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
 }
 function focusLineHTML(s, ln, li, cur) {
-  const sc = ln.sec, lbl = !ln.first ? '' : `<span class="fsec">${sc.jump ? '↺ ' : ''}${esc(sc.label || (sc.jump ? 'tilbake til takt ' : 'takt ') + sc.n0)}</span>`;
+  const sc = ln.sec, name = sc.label ? sc.name + (sc.mark ? ' · ' + sc.mark : '') : (sc.jump ? 'tilbake til takt ' : 'takt ') + sc.n0;
+  const lbl = !ln.first ? '' : `<span class="fsec${sc.cont ? ' cont' : ''}" style="color:${sc.color || 'var(--accent)'}">${sc.jump ? '↺ ' : ''}${esc(name)}${sc.cont ? ' (forts.)' : ''}</span>`;
   let body;
   if (ln.rest) {
     const a = s._exp[ln.ks[0]], b = s._exp[ln.ks[ln.ks.length - 1]];
@@ -672,13 +714,21 @@ function renderFocus(k) {
       e.classList.add('cur');
       const left = $('.rleft', e); if (left) left.textContent = `${+e.dataset.k1 - k + 1} igjen`;
     }
-    const sec = s._secs[s._secOf[k]];
-    $('#fMark').textContent = sec.label; $('#fMark').classList.toggle('hidden', !sec.label);
+    const li = s._lsecOf[k], sec = s._lsecs[li], nx = s._lsecs[li + 1];
+    $('#fMark').textContent = sec.label ? sec.name + (sec.mark ? ' · ' + sec.mark : '') : 'takt ' + sec.n0 + '–' + sec.n1;
+    $('#fMark').style.background = sec.color || 'var(--bg3)'; $('#fMark').style.color = sec.color ? '#111' : 'var(--fg)';
+    $('#fMark').classList.remove('hidden');
+    $('#fSecPos').textContent = `${k - sec.k0 + 1}/${sec.k1 - sec.k0 + 1} i delen`;
     for (let i = k; i <= k + 2 && i < s._exp.length; i++) {
       const m = s._byN.get(s._exp[i]);
       if (m.text) { txt = i === k ? esc(m.text) : `Snart (takt ${m.n}): ${esc(m.text)}`; break; }
     }
-  } else $('#fMark').classList.add('hidden');
+    // warn two measures before the next part starts
+    if (nx && sec.k1 - k < 2) {
+      const left = sec.k1 - k + 1, nn = nx.label ? nx.name : 'takt ' + nx.n0;
+      txt += (txt ? ' · ' : '') + `<span style="color:${nx.color || 'var(--accent)'}">Neste: ${nx.jump ? '↺ ' : ''}${esc(nn)} (takt ${nx.n0})</span> om ${left} takt${left > 1 ? 'er' : ''}`;
+    }
+  } else { $('#fMark').classList.add('hidden'); $('#fSecPos').textContent = ''; }
   $('#fText').innerHTML = txt;
 }
 function updateBeats(s, p, k) {
@@ -697,23 +747,33 @@ $('#fLane').addEventListener('click', e => {
 });
 
 /* ---- roadmap: sections in performance order ---- */
+/* a timeline of the song: one block per part in play order, width by length, colored by part type */
 function renderRoadmap() {
   const s = S.song, el = $('#roadmap');
   S.secI = null;
-  if (!s || s._secs.length < 2) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  if (!s || s._lsecs.length < 2) { el.classList.add('hidden'); el.innerHTML = ''; return; }
   el.classList.remove('hidden');
-  el.innerHTML = s._secs.map((c, i) => c.label
-    ? `<button class="sec" data-i="${i}"><b>${c.jump ? '↺ ' : ''}${esc(c.label)}</b><span>${c.n0}–${c.n1}</span></button>`
-    : `<button class="sec" data-i="${i}"><b>${c.jump ? '↺ ' : ''}${c.n0}</b><span>–${c.n1}</span></button>`).join('');
+  el.innerHTML = s._lsecs.map((c, i) => {
+    const len = c.k1 - c.k0 + 1;
+    const name = c.label ? c.name : String(c.n0);
+    return `<button class="sec" data-i="${i}" style="--sc:${c.color || 'var(--muted)'};flex:${len} 1 0">
+      <b>${c.jump ? '↺ ' : ''}${esc(name)}</b><span>${c.mark ? esc(c.mark) + ' · ' : ''}${c.n0}–${c.n1}</span><i class="sp"></i></button>`;
+  }).join('');
 }
 function markRoadmap(k) {
-  const s = S.song; if (!s || !s._secs.length) return;
-  const i = k == null ? -1 : s._secOf[k]; if (i === S.secI) return; S.secI = i;
-  const bs = $$('#roadmap .sec'); bs.forEach((b, j) => { b.classList.toggle('on', j === i); b.classList.toggle('past', j < i); });
+  const s = S.song; if (!s || !s._lsecs.length) return;
+  const i = k == null ? -1 : s._lsecOf[k]; if (i === S.secI) return; S.secI = i;
+  const bs = $$('#roadmap .sec');
+  bs.forEach((b, j) => { b.classList.toggle('on', j === i); b.classList.toggle('past', j < i); const sp = $('.sp', b); if (sp && j !== i) sp.style.width = j < i ? '100%' : '0'; });
   const b = bs[i], r = $('#roadmap');
-  if (b && r.offsetParent) r.scrollTo({ left: b.offsetLeft - r.clientWidth / 3, behavior: 'smooth' });
+  if (b && r.offsetParent && r.scrollWidth > r.clientWidth) r.scrollTo({ left: b.offsetLeft - r.clientWidth / 3, behavior: 'smooth' });
 }
-$('#roadmap').addEventListener('click', e => { const b = e.target.closest('.sec'); if (b && S.song) gotoExp(S.song._secs[+b.dataset.i].k0); });
+function roadmapProgress(p) {
+  const s = S.song; if (!s || p == null || S.secI == null || S.secI < 0) return;
+  const c = s._lsecs[S.secI], b = $$('#roadmap .sec')[S.secI]; if (!c || !b) return;
+  $('.sp', b).style.width = clamp((p - c.k0) / (c.k1 - c.k0 + 1) * 100, 0, 100).toFixed(1) + '%';
+}
+$('#roadmap').addEventListener('click', e => { const b = e.target.closest('.sec'); if (b && S.song) gotoExp(S.song._lsecs[+b.dataset.i].k0); });
 function gotoExp(k) { const s = S.song, n = s._exp[k]; return gotoMeasure(n, occurrences(s, n).indexOf(k)); }
 function beatsBetween(s, a, b) {
   let tot = 0, k = Math.floor(a);
@@ -771,11 +831,15 @@ audio.addEventListener('play', () => { $('#btnPlay').textContent = '❚❚'; tic
 audio.addEventListener('pause', () => { $('#btnPlay').textContent = '▶'; });
 audio.addEventListener('ended', () => { $('#btnPlay').textContent = '▶'; });
 audio.addEventListener('seeked', () => { onTime(); });
-$('#btnPlay').onclick = () => { if (audio.paused) audio.play().catch(e => toast('Kan ikke spille: ' + e.message)); else audio.pause(); };
+$('#btnPlay').onclick = () => {
+  if (L.on) { if (L.running) liveStop(); else liveStart(); return; }
+  ac();   // unlock the click sound on iOS while we have a user gesture
+  if (audio.paused) audio.play().catch(e => toast('Kan ikke spille: ' + e.message)); else audio.pause();
+};
 
 function tick() { onTime(); if (!audio.paused) requestAnimationFrame(tick); }
 function onTime() {
-  const s = S.song; if (!s) return;
+  const s = S.song; if (!s || L.on) return;
   const t = audio.currentTime;
   if (S.loop && !audio.paused && t >= S.loop.t1) { audio.currentTime = S.loop.t0; return; }
   if (!scrubbing) $('#scrub').value = audio.duration ? Math.round(1000 * t / audio.duration) : 0;
@@ -784,6 +848,11 @@ function onTime() {
   const p = r ? posAt(r.map, t) : null;
   S.pos = p != null && p < s._exp.length ? p : null;
   if (S.pos != null) S.cursor = Math.floor(S.pos);
+  // metronome over the recording: click when the playback crosses a beat
+  if (settings.metro && !audio.paused && S.pos != null) {
+    const k = Math.floor(S.pos), nb = s._byN.get(s._exp[k])._beats, b = Math.floor((S.pos - k) * nb + 1e-3), key = k + ':' + b;
+    if (key !== S.clickKey) { if (S.clickKey != null) click(0, b === 0); S.clickKey = key; }
+  } else S.clickKey = null;
   updateNow(false);
 }
 let scrubbing = false;
@@ -794,6 +863,12 @@ $('#scrub').addEventListener('change', () => { scrubbing = false; });
 async function gotoMeasure(n, occIdx) {
   const s = S.song; const occ = occurrences(s, n);
   if (!occ.length) { toast('Takt ' + n + ' finnes ikke'); return; }
+  if (L.on) {
+    // live: the occurrence closest to where we are (the band is usually near), and keep the clock running from there
+    const p = curExpPos() || 0;
+    const k = occIdx != null && occ[occIdx] != null ? occ[occIdx] : occ.reduce((a, b) => Math.abs(b - p) < Math.abs(a - p) ? b : a);
+    seekPos(k); return;
+  }
   const r = rec(s);
   if (!r || !r.map || !r.map.length) {
     let k = occ.find(x => x > (S.cursor == null ? -1 : S.cursor)); if (occIdx != null) k = occ[occIdx]; if (k == null) k = occ[0];
@@ -830,18 +905,186 @@ $('#btnGoto').onclick = async () => {
     if (i < 0) return; gotoMeasure(n, i);
   } else gotoMeasure(n);
 };
-function stepMeasure(d) {
-  const s = S.song; const k = Math.floor(curExpPos() == null ? 0 : curExpPos());
-  const nk = clamp(k + d, 0, s._exp.length - 1);
+/* move to an expanded position: live clock, recording (via its map), or just the cursor */
+function seekPos(p) {
+  const s = S.song; p = clamp(p, 0, s._exp.length - 0.001);
+  if (L.on) {
+    if (L.running) { L.p0 = p; L.t0 = clockNow(); L.sched = null; S.pos = p; }
+    else { S.cursor = p; S.pos = null; }
+    updateNow(true); return;
+  }
   const r = rec(s);
   if (r && r.map && r.map.length) {
-    const ts = timesAt(r.map, nk); const t = audio.currentTime;
-    if (ts.length) { ts.sort((a, b) => Math.abs(a - t) - Math.abs(b - t)); audio.currentTime = ts[0]; S.cursor = nk; onTime(); return; }
+    const ts = timesAt(r.map, p), t = audio.currentTime;
+    if (ts.length) { ts.sort((a, b) => Math.abs(a - t) - Math.abs(b - t)); audio.currentTime = ts[0]; S.cursor = p; onTime(); return; }
   }
-  S.cursor = nk; S.pos = null; updateNow(true);
+  S.cursor = p; S.pos = null; updateNow(true);
 }
-$('#btnPrev').onclick = () => stepMeasure(-1);
-$('#btnNext').onclick = () => stepMeasure(1);
+/* step chord by chord in play order; going back within the first beat of a chord goes to the previous one */
+function stepChord(d) {
+  const s = S.song, ev = s._ev.filter(e => e.c), p = curExpPos() || 0;
+  if (!ev.length) { seekPos(Math.floor(p) + d); return; }
+  let i = -1; for (let j = 0; j < ev.length; j++) { if (ev[j].pos <= p + 1e-4) i = j; else break; }
+  let t;
+  if (d > 0) t = ev[i + 1];
+  else {
+    const m = s._byN.get(s._exp[Math.floor(p)]), oneBeat = 1 / (m ? m._beats : 4);
+    t = i >= 0 && p - ev[i].pos > oneBeat ? ev[i] : ev[Math.max(0, i - 1)];
+  }
+  if (t) seekPos(t.pos + 1e-4);
+}
+$('#btnPrev').onclick = () => stepChord(-1);
+$('#btnNext').onclick = () => stepChord(1);
+
+/* ================= Live: tempo/tap-driven cursor + metronome ================= */
+const L = { on: false, running: false, bpm: 100, t0: 0, p0: 0, taps: [], sched: null };
+let actx = null;
+function ac() {
+  if (!actx) {
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { }   // iOS 17: click also with the silent switch on
+    try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+  }
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+/* the live clock is the system clock; clicks are converted to the audio clock when scheduled */
+function clockNow() { return performance.now() / 1000; }
+function click(when, accent) {   // when: clockNow() seconds (0 = now)
+  const a = ac(); if (!a) return;
+  when = Math.max(a.currentTime, when ? a.currentTime + (when - clockNow()) : 0);
+  const o = a.createOscillator(), g = a.createGain();
+  o.frequency.value = accent ? 1760 : 1100;
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(accent ? 0.9 : 0.5, when + 0.002);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + 0.07);
+  o.connect(g); g.connect(a.destination); o.start(when); o.stop(when + 0.09);
+}
+/* position after `beats` beats from p (measures can have different beat counts) */
+function advance(s, p, beats) {
+  let k = Math.floor(p), f = p - k;
+  while (k < s._exp.length) {
+    const nb = s._byN.get(s._exp[k])._beats, left = (1 - f) * nb;
+    if (beats < left - 1e-9) return k + f + beats / nb;
+    beats -= left; k++; f = 0;
+  }
+  return s._exp.length;
+}
+function livePos(t) { return advance(S.song, L.p0, Math.max(0, (t - L.t0) * L.bpm / 60)); }
+function estimateBpm(s) {
+  if (s.liveBpm) return s.liveBpm;
+  const base = beatsOf(s.timeSig || '4/4');
+  for (const r of s.recordings || []) {
+    const d = [];
+    for (let i = 0; i + 1 < (r.map || []).length; i++) { const a = r.map[i], b = r.map[i + 1]; if (a[1] != null && b[1] === a[1] + 1 && b[0] > a[0]) d.push(b[0] - a[0]); }
+    if (d.length > 8) { d.sort((x, y) => x - y); return Math.round(base * 60 / d[d.length >> 1]); }
+  }
+  return s.tempo || 100;
+}
+function setBpm(v, save) {
+  v = clamp(Math.round(v), 30, 260);
+  if (L.running) { const t = clockNow(); L.p0 = livePos(t); L.t0 = t; L.sched = null; }
+  L.bpm = v; $('#bpmNum').textContent = v;
+  if (save && S.song) { S.song.liveBpm = v; DB.put('songs', strip(S.song)); }
+}
+function setSource(live) {
+  L.on = live; liveStop();
+  $$('#srcSeg button').forEach(b => b.classList.toggle('on', (b.dataset.src === 'live') === live));
+  $('#transport').classList.toggle('live', live);
+  if (live) { audio.pause(); S.pos = null; S.cursor = Math.floor(S.cursor || 0); }
+  else onTime();
+  if (S.song) { S.song.liveMode = live; DB.put('songs', strip(S.song)); }
+  $('#noAudio').classList.toggle('hidden', live || !!rec(S.song));
+  updateNow(true);
+}
+$$('#srcSeg button').forEach(b => b.onclick = () => { ac(); setSource(b.dataset.src === 'live'); });
+function liveStart(atTime) {
+  const s = S.song; if (!s) return;
+  ac();
+  const p = Math.floor(curExpPos() || 0), nb = s._byN.get(s._exp[p])._beats;
+  L.p0 = p;
+  // count-in: one measure of clicks when the metronome is on (unless started by tapping, which is its own count-in)
+  L.t0 = atTime != null ? atTime : clockNow() + (settings.metro ? nb * 60 / L.bpm : 0.05);
+  L.running = true; L.sched = null;
+  $('#btnPlay').textContent = '❚❚';
+  requestAnimationFrame(liveTick);
+}
+function liveStop() {
+  if (!L.running) return;
+  L.running = false; L.taps = [];
+  const p = livePos(clockNow());
+  S.cursor = Math.min(p, S.song ? S.song._exp.length - 0.001 : 0); S.pos = null;
+  $('#btnPlay').textContent = '▶'; $('#btnTapLive').textContent = 'TAPP';
+  updateNow(true);
+}
+function liveTick() {
+  const s = S.song; if (!L.running || !s) return;
+  const t = clockNow();
+  if (t < L.t0) {   // counting in
+    const left = Math.ceil((L.t0 - t) * L.bpm / 60);
+    S.pos = null; S.cursor = L.p0; L.counting = true; $('#fText').textContent = 'Inntelling … ' + left;
+  } else {
+    if (L.counting) { L.counting = false; S.lastMeasureKey = null; }
+    const p = livePos(t);
+    if (p >= s._exp.length) { liveStop(); return; }
+    S.pos = p;
+  }
+  if (settings.metro) scheduleClicks(t);
+  updateNow(false);
+  requestAnimationFrame(liveTick);
+}
+/* schedule metronome clicks slightly ahead on the audio clock, so they are exact even if frames are late */
+function scheduleClicks(t) {
+  const spb = 60 / L.bpm, s = S.song;
+  let b = L.sched == null ? Math.ceil((t - L.t0) / spb - 1e-6) : L.sched + 1;
+  const nbStart = s._byN.get(s._exp[Math.floor(L.p0)])._beats;
+  for (; L.t0 + b * spb < t + 0.15; b++) {
+    const when = L.t0 + b * spb;
+    let accent;
+    if (b < 0) accent = (b + nbStart * 64) % nbStart === 0;      // count-in: accent on its first beat
+    else { const p = advance(s, L.p0, b); accent = Math.abs(p - Math.round(p)) < 1e-6; }
+    click(when, accent);
+    L.sched = b;
+  }
+}
+/* TAPP: sets the tempo from the last taps; stopped = tap one measure to count in and start on the next beat;
+   running = re-sync to the nearest beat (and adopt the tapped tempo) */
+function liveTap() {
+  const s = S.song; if (!s) return;
+  ac();
+  const t = clockNow(), pNow = L.running && t >= L.t0 ? livePos(t) : null;   // position at the old tempo
+  L.taps = L.taps.filter(x => t - x < 2.5).concat(t).slice(-6);
+  const iv = []; for (let i = 1; i < L.taps.length; i++) iv.push(L.taps[i] - L.taps[i - 1]);
+  const good = iv.filter(x => x > 0.2 && x < 2.2).slice(-4);
+  if (good.length) { const sorted = good.slice().sort((a, b) => a - b); L.bpm = clamp(Math.round(60 / sorted[sorted.length >> 1]), 30, 260); $('#bpmNum').textContent = L.bpm; }
+  if (settings.metro) click(0, false);
+  if (!L.running) {
+    const p = Math.floor(curExpPos() || 0), nb = s._byN.get(s._exp[p])._beats, need = Math.min(nb, 4);
+    if (L.taps.length >= need && good.length >= need - 1) { liveStart(t + 60 / L.bpm); L.taps = []; s.liveBpm = L.bpm; DB.put('songs', strip(s)); }
+    else $('#btnTapLive').textContent = `TAPP ${L.taps.length}/${need}`;
+    return;
+  }
+  if (pNow == null) return;   // tapping during the count-in only adjusts the tempo
+  // running: snap the phase to the nearest beat, keep the measure we are in
+  const k = Math.floor(pNow), nb = s._byN.get(s._exp[k])._beats, f = (pNow - k) * nb, fr = Math.round(f);
+  L.p0 = Math.abs(f - fr) < 0.45 ? (fr >= nb ? k + 1 : k + fr / nb) : pNow;
+  L.t0 = t; L.sched = null;
+}
+$('#btnTapLive').addEventListener('touchstart', e => { e.preventDefault(); liveTap(); }, { passive: false });
+$('#btnTapLive').addEventListener('mousedown', e => { e.preventDefault(); liveTap(); });
+$('#bpmMinus').onclick = () => setBpm(L.bpm - 2, true);
+$('#bpmPlus').onclick = () => setBpm(L.bpm + 2, true);
+$('#bpmVal').onclick = async () => { const v = await numpad('Tempo (slag per minutt)', L.bpm); if (v) setBpm(v, true); };
+$('#btnMetro').onclick = () => { ac(); settings.metro = !settings.metro; saveSettings(); $('#btnMetro').classList.toggle('on', settings.metro); L.sched = null; };
+
+/* swipe left/right on the focus view = next/previous chord */
+(function () {
+  let x0 = null, y0 = null;
+  $('#focusPane').addEventListener('touchstart', e => { const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; }, { passive: true });
+  $('#focusPane').addEventListener('touchend', e => {
+    if (x0 == null) return; const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0; x0 = null;
+    if (Math.abs(dx) > 60 && Math.abs(dy) < 50) stepChord(dx < 0 ? 1 : -1);
+  }, { passive: true });
+})();
 
 /* speed */
 $('#btnSpeed').onclick = async () => {
@@ -920,23 +1163,22 @@ function addRecording() {
 document.addEventListener('keydown', e => {
   if (!S.song || !$('#modal').classList.contains('hidden') || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
   if (S.tap && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); doTap(); return; }
-  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === 'ArrowDown') { e.preventDefault(); stepRow(1); }
-  else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === 'ArrowUp') { e.preventDefault(); stepRow(-1); }
+  // pedal / keyboard: ← → chord by chord, ↑ ↓ PgUp PgDn line by line, T = tap tempo (live), space = play/stop
+  if (e.key === 'ArrowRight') { e.preventDefault(); stepChord(1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); stepChord(-1); }
+  else if (e.key === 'PageDown' || e.key === 'ArrowDown') { e.preventDefault(); stepRow(1); }
+  else if (e.key === 'PageUp' || e.key === 'ArrowUp') { e.preventDefault(); stepRow(-1); }
+  else if ((e.key === 't' || e.key === 'T' || e.key === 'Enter') && L.on) { e.preventDefault(); liveTap(); }
   else if (e.key === ' ') { e.preventDefault(); $('#btnPlay').click(); }
 });
 function stepRow(d) {
   // pedal: move cursor by one system (line)
   const s = S.song, k = Math.floor(curExpPos() || 0), n = s._exp[k];
-  if (S.mode === 'focus') {
-    const nk = s._lines[clamp(s._lineOf[k] + d, 0, s._lines.length - 1)].ks[0];
-    if (!audio.paused) { gotoExp(nk); return; }
-    S.cursor = nk; S.pos = null; updateNow(true); return;
-  }
+  if (S.mode === 'focus') { seekPos(s._lines[clamp(s._lineOf[k] + d, 0, s._lines.length - 1)].ks[0]); return; }
   const rows = chartRows(s); const ri = rows.findIndex(r => r.some(m => m.n === n));
   const target = rows[clamp(ri + d, 0, rows.length - 1)][0].n;
   const occ = occurrences(s, target); const nk = d > 0 ? (occ.find(x => x > k) ?? occ[0]) : ([...occ].reverse().find(x => x < k) ?? occ[0]);
-  if (!audio.paused) { gotoMeasure(target, occ.indexOf(nk)); return; }
-  S.cursor = nk; S.pos = null; updateNow(true);
+  seekPos(nk);
 }
 
 /* wake lock */

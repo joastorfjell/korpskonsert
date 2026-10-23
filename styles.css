@@ -94,7 +94,7 @@ input,textarea,select{-webkit-user-select:text;user-select:text;font:inherit}
 .m:last-child{border-right:2px solid var(--line)}
 .mode-split .m{min-width:calc(120px * var(--fs))}
 .m .mn{position:absolute;left:5px;top:2px;font-size:11px;color:var(--muted);font-weight:600}
-.mk.sec{background:var(--accent2)!important;color:#fff!important}
+.mk.sec{color:#111!important}
 .m .mk{position:absolute;right:4px;top:2px;font-size:11px;font-weight:800;color:#111;background:var(--accent);border-radius:4px;padding:0 5px}
 .m .tx{font-size:11px;color:var(--accent2);font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .m .cs{display:flex;align-items:baseline;min-width:0}
@@ -201,7 +201,7 @@ sup.q{font-size:.55em;font-weight:600;vertical-align:.7em;letter-spacing:-.02em}
 .times{display:flex;justify-content:space-between;font-size:12px;font-variant-numeric:tabular-nums;gap:8px}
 .times #recName{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .noaudio{padding:6px 12px calc(6px + var(--sab));font-size:13px;color:var(--muted);background:var(--bg2);text-align:center}
-.transport.noaud .scrub,.transport.noaud #btnPlay,.transport.noaud #btnLoop,.transport.noaud #btnSpeed{display:none}
+.transport.noaud:not(.live) .scrub,.transport.noaud:not(.live) #btnPlay,.transport.noaud:not(.live) #btnLoop,.transport.noaud:not(.live) #btnSpeed{display:none}
 
 /* sync panel */
 .syncpanel{background:var(--bg3);border-top:2px solid var(--accent2);padding:8px 12px;display:flex;flex-direction:column;gap:6px;flex:none}
@@ -234,3 +234,36 @@ sup.q{font-size:.55em;font-weight:600;vertical-align:.7em;letter-spacing:-.02em}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
 .kv div:nth-child(odd){color:var(--muted)}
 .fm .mk.sec{display:none}
+
+/* section colors: top edge in the chart, left edge in focus */
+.m{border-top:4px solid var(--sc,transparent)}
+.fm{border-left:6px solid var(--sc,var(--line))}
+.fsec.cont{opacity:.55;font-weight:600}
+#fSecPos{font-size:12px;color:var(--muted);margin-bottom:4px}
+.fmark{font-size:20px}
+
+/* roadmap as a timeline: block width by length, color by part type, progress inside the current part */
+.roadmap{gap:4px;padding:6px 10px}
+.sec{position:relative;min-width:58px;overflow:hidden;flex-direction:column;align-items:flex-start;gap:0;padding:4px 8px 6px;min-height:44px;
+  border:0;border-left:4px solid var(--sc);background:var(--bg3);background:color-mix(in srgb,var(--sc) 14%,var(--bg3))}
+.sec b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.sec span{white-space:nowrap}
+.sec .sp{position:absolute;left:0;bottom:0;height:4px;width:0;background:var(--sc)}
+.sec.past{opacity:.5}
+.sec.on{background:var(--sc);color:#111;opacity:1;border-color:var(--sc)}
+.sec.on .sp{background:#111;opacity:.45}
+
+/* source switch, live controls, metronome */
+.srcseg button{padding:8px 10px;min-height:44px}
+.livebox{display:none;align-items:center;gap:6px}
+.transport.live .livebox{display:flex}
+.transport.live .scrub,.transport.live #btnLoop,.transport.live #btnSpeed,.transport.live #btnRec{display:none}
+.transport.live{justify-content:flex-start}
+.tapbtn{min-width:130px;min-height:52px;font-size:20px;letter-spacing:.06em;background:var(--accent2);color:#fff;border-color:var(--accent2)}
+.tapbtn:active{filter:brightness(1.4)}
+.bpm{appearance:none;border:0;background:transparent;color:var(--fg);display:flex;flex-direction:column;align-items:center;min-width:64px;line-height:1;cursor:pointer;font:inherit}
+.bpm b{font-family:var(--chord);font-size:26px}
+.bpm span{font-size:10px;color:var(--muted)}
+#btnMetro.on{background:var(--accent2);border-color:var(--accent2);color:#fff}
+@media (orientation:portrait){ .transport{flex-wrap:wrap} .transport .scrub{flex-basis:100%;order:10} }
+.m .mk{white-space:nowrap;max-width:70%;overflow:hidden;text-overflow:ellipsis}

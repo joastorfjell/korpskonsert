@@ -64,7 +64,7 @@
     <div id="content" class="content mode-chart">
       <div id="focusPane" class="pane focus">
         <div class="fnow">
-          <div class="fpos"><span id="fMark" class="fmark hidden"></span><span class="lbl">Takt</span><span id="fMeasure">–</span><span id="fRep" class="rep"></span></div>
+          <div class="fpos"><span id="fMark" class="fmark hidden"></span><span id="fSecPos" class="rep"></span><span class="lbl">Takt</span><span id="fMeasure">–</span><span id="fRep" class="rep"></span></div>
           <div class="fcur"><span class="lbl">Nå</span><span id="fNow" class="fchord">–</span><div id="fBeats" class="beats"></div></div>
           <div class="fnext"><span class="lbl">Neste</span><span id="fNext" class="fchord">–</span><span id="fNextIn" class="rep"></span></div>
         </div>
@@ -107,9 +107,16 @@
     </div>
 
     <footer id="transport" class="transport">
-      <button id="btnPrev" class="btn tbtn" aria-label="Forrige takt">⏮</button>
+      <div class="seg srcseg" id="srcSeg"><button data-src="audio" class="on">Lyd</button><button data-src="live">Live</button></div>
+      <button id="btnPrev" class="btn tbtn" aria-label="Forrige akkord">⏮</button>
       <button id="btnPlay" class="btn tbtn play" aria-label="Spill">▶</button>
-      <button id="btnNext" class="btn tbtn" aria-label="Neste takt">⏭</button>
+      <button id="btnNext" class="btn tbtn" aria-label="Neste akkord">⏭</button>
+      <div id="liveBox" class="livebox">
+        <button id="btnTapLive" class="btn tapbtn">TAPP</button>
+        <button id="bpmMinus" class="btn" aria-label="Saktere">−</button>
+        <button id="bpmVal" class="bpm" aria-label="Skriv inn tempo"><b id="bpmNum">100</b><span>slag/min</span></button>
+        <button id="bpmPlus" class="btn" aria-label="Raskere">+</button>
+      </div>
       <div class="scrub">
         <input id="scrub" type="range" min="0" max="1000" value="0" step="1">
         <div class="times"><span id="tCur">0:00</span><span id="recName" class="muted"></span><span id="tDur">0:00</span></div>
@@ -118,8 +125,9 @@
       <button id="btnLoop" class="btn ghost">⟲ Løkke</button>
       <button id="btnSpeed" class="btn ghost">100 %</button>
       <button id="btnRec" class="btn trackbtn" aria-label="Velg lydspor"><span class="ti">♪</span><span id="trackName">Lydspor</span></button>
+      <button id="btnMetro" class="btn ghost" aria-label="Metronom">♩ Klikk</button>
     </footer>
-    <div id="noAudio" class="noaudio hidden">Ingen opptak for denne sangen. Bruk ⏮ ⏭ / pedal for å bla, eller ⋯ → «Legg til opptak».</div>
+    <div id="noAudio" class="noaudio hidden">Ingen opptak for denne sangen – bruk <b>Live</b>: tapp inn tempoet, eller bla med ⏮ ⏭ / pedal.</div>
   </section>
 </div>
 
