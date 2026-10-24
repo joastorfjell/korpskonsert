@@ -2,7 +2,7 @@
    Data lives in IndexedDB (imported from a .korps bundle); the app shell is cached by sw.js. */
 'use strict';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -1532,7 +1532,7 @@ function anBadges(list) {
 function anLine(a, pre) {
   const [name, col, g] = kindOf(a), who = a.src === 'mine' ? 'Meg' : 'Dirigent';
   return `<div class="fan" data-a="${esc(a.id)}" style="--ac:${col}"><span class="ang">${esc(g)}</span>${esc(pre)}<b>${esc(a.text)}</b>
-    <span class="anm">${esc(anRange(a))} · ${who}${a.date ? ' ' + esc(fmtDate(a.date)) : ''}${a.clip ? ' · ▶' : ''}</span></div>`;
+    <span class="anm">${esc(anRange(a))} · ${who}${a.date ? ' ' + esc(fmtDate(a.date)) : ''}${a.clip ? ' · ▶' : ''}${a.status === 'forslag' ? ' · forslag' : ''}</span></div>`;
 }
 function updateNotesBtn() {
   const s = S.song, n = s ? (s.annotations || []).filter(a => !a.hidden).length : 0;
@@ -1558,6 +1558,8 @@ function showAnnotation(id) {
       <div class="antext">${esc(a.text)}</div>
       <div class="muted small">${a.src === 'mine' ? 'Mitt notat' : 'Dirigent'}${a.date ? ' · øving ' + esc(fmtDate(a.date)) : ''}${a.who ? ' · gjelder ' + esc(a.who) : ''}${a.occ ? ` · ${a.occ}. gang` : ''}</div>
       ${a.quote ? `<div class="anquote">«${esc(a.quote)}»</div>` : ''}</div></div>
+    ${a.status === 'forslag' ? `<div class="anprop">Forslag fra øvingsagenten – hør klippet og sjekk teksten og taktene.
+      <div class="row2" style="margin-top:8px"><button class="btn primary" id="aOk">✓ Godkjenn</button><button class="btn ghost" id="aNo">Avvis</button></div></div>` : ''}
     <div class="row2" style="margin-top:14px">
       ${a.clip ? '<button class="btn primary" id="aClip" data-clip>▶ Hør dirigenten</button>' : ''}
       <button class="btn" id="aGo">Gå til takt ${a.n0}</button>
@@ -1567,6 +1569,11 @@ function showAnnotation(id) {
     if (a.clip) $('#aClip', body).onclick = e => playClip(a, e.currentTarget);
     $('#aGo', body).onclick = () => { closeModal(); gotoMeasure(a.n0, a.occ ? a.occ - 1 : null); };
     $('#aEdit', body).onclick = () => editAnnotation(a);
+    if (a.status === 'forslag') {
+      const done = async () => { a.edited = true; S.song.notesEdited = true; await saveSong(S.song); renderChart(); S.focusLi = null; S.lastMeasureKey = null; updateNow(true); updateNotesBtn(); };
+      $('#aOk', body).onclick = async () => { delete a.status; await done(); closeModal(); toast('Godkjent ✓'); };
+      $('#aNo', body).onclick = async () => { a.hidden = true; await done(); closeModal(); toast('Avvist'); };
+    }
   });
 }
 $('#btnNotes').onclick = () => openNotes();
@@ -1586,7 +1593,7 @@ function openNotes() {
       ${dates.length > 1 ? '<span class="chipsep"></span>' + chip('date', null, 'Alle øvinger') + dates.map(d => chip('date', d, esc(fmtDate(d)))).join('') : ''}</div>` : ''}
     <div class="anlist">${list.map(a => { const [name, col, g] = kindOf(a); return `<div class="anrow" data-a="${esc(a.id)}" style="--ac:${col}">
       <span class="ang">${esc(g)}</span><span class="anr">${esc(anRange(a))}${a.occ ? `<small>${a.occ}. gang</small>` : ''}</span>
-      <span class="ant"><b>${esc(a.text)}</b><small>${esc(name)} · ${a.src === 'mine' ? 'meg' : 'dirigent'}${a.date ? ' ' + esc(fmtDate(a.date)) : ''}${a.who ? ' · ' + esc(a.who) : ''}</small></span>
+      <span class="ant"><b>${esc(a.text)}</b><small>${esc(name)} · ${a.src === 'mine' ? 'meg' : 'dirigent'}${a.date ? ' ' + esc(fmtDate(a.date)) : ''}${a.who ? ' · ' + esc(a.who) : ''}${a.status === 'forslag' ? ' · <i class="prop">forslag</i>' : ''}</small></span>
       ${a.clip ? '<button class="btn ghost" data-clip>▶</button>' : ''}<button class="btn ghost" data-edit>✎</button></div>`; }).join('')
       || `<div class="empty small">${all.length ? 'Ingen notater med dette filteret.' : 'Ingen notater for denne sangen ennå.<br>Notater fra øvingsopptak kommer med datafila; egne notater legger du til her.'}</div>`}</div>
     <div class="row2" style="margin-top:12px"><button class="btn primary" id="aNew">+ Nytt notat ved takt ${s._exp[Math.floor(curExpPos() || 0)]}</button></div>`, body => {
@@ -1627,7 +1634,7 @@ function editAnnotation(a) {
       if (!s._byN.get(v.n1) || s._byN.get(v.n1)._i < s._byN.get(v.n0)._i) v.n1 = v.n0;
       if (!v.text) { toast('Skriv et notat'); return; }
       if (isNew) (s.annotations = s.annotations || []).push(Object.assign({ id: 'u-' + Date.now().toString(36), src: 'mine', date: new Date().toISOString().slice(0, 10) }, v));
-      else Object.assign(a, v, { edited: true });
+      else { Object.assign(a, v, { edited: true }); delete a.status; }
       await done(); closeModal(); toast('Notat lagret ✓');
     };
     if (!isNew) $('#aDel', body).onclick = async () => {
