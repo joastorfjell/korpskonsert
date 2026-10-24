@@ -270,3 +270,36 @@ sup.q{font-size:.55em;font-weight:600;vertical-align:.7em;letter-spacing:-.02em}
 .songrow .struct{font-size:13px;color:var(--accent2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fm.many .c,.fl.now .fm.many .c{font-size:calc(28px * var(--fs))}
 .m.many .c{font-size:calc(22px * var(--fs))}
+
+/* rehearsal notes: badge on the measure where a note starts, colored underline over its range */
+.ans{position:absolute;right:4px;bottom:6px;display:flex;gap:3px;z-index:2}
+.fm .ans{right:8px;bottom:8px}
+.an{appearance:none;border:0;min-width:26px;height:24px;padding:0 5px;border-radius:7px;background:var(--ac);color:#111;font:800 13px/24px var(--chord);cursor:pointer}
+.fm .an{min-width:32px;height:30px;font-size:16px;line-height:30px}
+.m.anin,.fm.anin{box-shadow:inset 0 -4px 0 var(--ac)}
+.m.anin.cur{box-shadow:inset 0 0 0 3px var(--accent),inset 0 -7px 0 var(--ac)}
+.fm.anin.cur{box-shadow:inset 0 0 0 2px var(--accent),inset 0 -7px 0 var(--ac)}
+.ftext{display:flex;flex-direction:column;align-items:center;gap:4px}
+.fan{display:flex;align-items:baseline;gap:8px;max-width:100%;font-style:normal;color:var(--fg);font-size:19px;cursor:pointer;
+  background:var(--bg2);border-left:5px solid var(--ac);border-radius:8px;padding:4px 12px}
+.fan b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fan .anm{font-size:13px;color:var(--muted);white-space:nowrap;font-weight:600}
+.ang{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:22px;padding:0 4px;border-radius:6px;background:var(--ac);color:#111;font:800 13px var(--chord);flex:none}
+.ang.big{min-width:44px;height:40px;font-size:22px}
+#btnNotes .cnt{margin-left:6px;background:var(--accent2);color:#fff;border-radius:9px;padding:0 6px;font-size:12px}
+#btnNotes .cnt:empty{display:none}
+.anbox{display:flex;gap:14px;align-items:flex-start;border-left:5px solid var(--ac);padding:4px 0 4px 12px}
+.antext{font-size:22px;font-weight:700;margin-bottom:6px}
+.anquote{margin-top:8px;font-style:italic;color:var(--accent2)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center}
+.chip{appearance:none;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:16px;padding:6px 12px;font-weight:600;font-size:13px;border-left:5px solid var(--ac,var(--line))}
+.chip.on{background:var(--accent);color:#111;border-color:var(--accent)}
+.chipsep{width:10px}
+.anlist{display:flex;flex-direction:column;gap:6px}
+.anrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;background:var(--bg2);border-left:5px solid var(--ac);cursor:pointer}
+.anrow .anr{font-weight:800;min-width:76px;display:flex;flex-direction:column}
+.anrow small{display:block;font-size:12px;color:var(--muted);font-weight:500}
+.anrow .ant{flex:1;min-width:0}
+.anrow .btn{min-height:40px;padding:6px 12px}
+.ansum{background:var(--bg2);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:14px}
+[data-clip].on{background:var(--accent2);color:#fff;border-color:var(--accent2)}

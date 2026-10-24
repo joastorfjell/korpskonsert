@@ -2,7 +2,7 @@
    Data lives in IndexedDB (imported from a .korps bundle); the app shell is cached by sw.js. */
 'use strict';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -41,9 +41,13 @@ const DB = {
 };
 
 /* ================= Settings ================= */
-const DEFAULT_SETTINGS = { theme: 'dark', naming: 'intl', fs: 1, perRow: 'sheet', preroll: true, wake: true, invertSheet: false };
+const DEFAULT_SETTINGS = { theme: 'dark', naming: 'intl', fs: 1, perRow: 'sheet', preroll: false, wake: true, invertSheet: false, sv: 2 };
 let settings = Object.assign({}, DEFAULT_SETTINGS);
-async function loadSettings() { const m = await DB.get('meta', 'settings'); if (m) Object.assign(settings, m.v); applySettings(); }
+async function loadSettings() {
+  const m = await DB.get('meta', 'settings'); if (m) Object.assign(settings, m.v);
+  if ((settings.sv || 1) < 2) { settings.preroll = false; settings.sv = 2; saveSettings(); }   // 1.4: taps land exactly on the measure/chord
+  applySettings();
+}
 function saveSettings() { applySettings(); return DB.put('meta', { k: 'settings', v: settings }); }
 function applySettings() {
   document.documentElement.dataset.theme = settings.theme;
@@ -199,6 +203,15 @@ function prep(song) {
   // carried chord per printed measure (for display)
   let carry = null;
   for (const m of song.measures) { m._carry = carry; if (m.chords && m.chords.length) carry = m.chords[m.chords.length - 1][0]; }
+  // rehearsal notes: which start at / cover each printed measure
+  const anAt = new Map(), anIn = new Map(), add = (mp, n, a) => { if (!mp.has(n)) mp.set(n, []); mp.get(n).push(a); };
+  for (const a of song.annotations || []) {
+    const m0 = byN.get(a.n0); if (!m0 || a.hidden) continue;
+    const m1 = byN.get(a.n1) || m0;
+    add(anAt, a.n0, a);
+    for (let i = m0._i; i <= Math.max(m0._i, m1._i); i++) add(anIn, song.measures[i].n, a);
+  }
+  song._anAt = anAt; song._anIn = anIn;
 }
 /* one color per section type, so repeats of the same part look the same everywhere */
 const SEC_COLORS = [[/^intro/i, '#8da2c0'], [/^vers/i, '#4fb3ff'], [/^pre/i, '#2dd4bf'], [/^refr|^chorus/i, '#ffb627'], [/^bro|^bridge/i, '#c084fc'],
@@ -241,7 +254,11 @@ function timesAt(map, pos) {
     if (a[1] == null) continue;
     if (b && b[1] != null && b[1] > a[1] && b[1] - a[1] <= 8) {
       if (pos >= a[1] && pos < b[1]) out.push(a[0] + (pos - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
-    } else if (pos >= a[1] && pos < Math.floor(a[1]) + 1) out.push(a[0] + (pos - a[1]) * localDur(map, i));
+    } else if (pos >= a[1] && pos < Math.floor(a[1]) + 1) {
+      // extrapolated: only valid until the next map point (else posAt would read it from that point instead)
+      const t = a[0] + (pos - a[1]) * localDur(map, i);
+      if (!b || t < b[0] - 1e-3) out.push(t);
+    }
   }
   return out;
 }
@@ -386,6 +403,7 @@ async function importBundle(file, hlen) {
     s.orig = { measures: clone(s.measures), form: clone(s.form), maps: (s.recordings || []).map(r => clone(r.map || [])) };
     if (old) {
       s.order = old.order;
+      s.annotations = mergeAnnotations(s.annotations, old.annotations); if (old.notesEdited) s.notesEdited = true;
       if (old.edited && keepEdits) {
         for (const k of ['measures', 'form', 'title', 'part', 'keySig', 'timeSig', 'transpose', 'notes']) s[k] = old[k];
         s.edited = true;
@@ -399,7 +417,7 @@ async function importBundle(file, hlen) {
   toast(`Importert ${header.songs.length} sanger ✓`, 3000);
 }
 async function exportEdits() {
-  const songs = S.songs.filter(s => s.edited || (s.recordings || []).some(r => r.mapEdited) || s.userCreated);
+  const songs = S.songs.filter(s => s.edited || s.notesEdited || (s.recordings || []).some(r => r.mapEdited) || s.userCreated);
   if (!songs.length) { toast('Ingen endringer å eksportere'); return; }
   const data = {
     kind: 'korps-edits', version: 1, date: new Date().toISOString(),
@@ -407,6 +425,7 @@ async function exportEdits() {
       id: s.id, title: s.title, part: s.part, keySig: s.keySig, timeSig: s.timeSig, transpose: s.transpose || 0, notes: s.notes,
       measures: strip(s).measures, form: s.form, userCreated: !!s.userCreated, edited: !!s.edited,
       maps: (s.recordings || []).map(r => ({ id: r.id, map: r.map, mapEdited: !!r.mapEdited })),
+      annotations: s.notesEdited ? s.annotations || [] : undefined,
     })),
   };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
@@ -423,6 +442,7 @@ async function importEdits(j) {
     let s = S.songs.find(x => x.id === e.id);
     if (!s) { if (!e.userCreated) continue; s = { id: e.id, recordings: [], pages: [], systems: [], order: S.songs.length, userCreated: true }; }
     Object.assign(s, { title: e.title, part: e.part, keySig: e.keySig, timeSig: e.timeSig, transpose: e.transpose, notes: e.notes, measures: e.measures, form: e.form, edited: e.edited });
+    if (e.annotations) { s.annotations = mergeAnnotations(s.annotations, e.annotations); s.notesEdited = true; }
     (e.maps || []).forEach(m => { const r = (s.recordings || []).find(x => x.id === m.id); if (r && m.mapEdited) { r.map = m.map; r.mapEdited = true; } });
     await saveSong(s); n++;
   }
@@ -468,7 +488,7 @@ async function openSong(id) {
   S.song = song; S.pos = null; S.cursor = 0; S.loop = null; S.loopPick = null; S.lastMeasureKey = null; S.focusLi = null; S.curH = S.nxtH = null;
   $('#listView').classList.add('hidden'); $('#songView').classList.remove('hidden');
   setEditing(false); setSyncing(false);
-  renderHeader(); renderChart(); renderRoadmap(); await renderSheet(); await loadAudio();
+  renderHeader(); renderChart(); renderRoadmap(); updateNotesBtn(); await renderSheet(); await loadAudio();
   setBpm(estimateBpm(song)); $('#btnMetro').classList.toggle('on', !!settings.metro);
   setSource(song.liveMode != null ? song.liveMode : !rec(song));
   setMode(song.viewMode || (song.measures.some(m => m.chords && m.chords.length) ? 'focus' : 'sheet'));
@@ -529,7 +549,7 @@ function measureHTML(m, song, first) {
       const nb = i + 1 < m.chords.length ? m.chords[i + 1][1] : bs + 1;
       const w = Math.max(0.5, nb - b);
       const u = /\?$/.test(c) ? ' unsure' : '';
-      return `<span class="c${u}" style="flex:${w} 1 0">${chordHTML(c, song)}</span>`;
+      return `<span class="c${u}" data-b="${b}" style="flex:${w} 1 0">${chordHTML(c, song)}</span>`;
     }).join('');
     const lead = m.chords[0][1] - 1;
     if (lead > 0.01) chords = `<span class="c carry" style="flex:${lead} 1 0">${m._carry ? chordHTML(m._carry, song) : ''}</span>` + chords;
@@ -538,9 +558,10 @@ function measureHTML(m, song, first) {
   else chords = '<span class="c hold">%</span>';
   const pill = m.sec ? `<span class="mk sec" style="background:${m._color}">${esc(m.sec)}${m.mark ? ' · ' + esc(m.mark) : ''}</span>`
     : m.mark ? `<span class="mk" style="background:${m._color || 'var(--accent)'}">${esc(m.mark)}</span>` : '';
-  return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}${(m.chords || []).length >= 3 ? ' many' : ''}" data-n="${m.n}" style="--sc:${m._color || 'transparent'}">
+  const inAn = (song._anIn.get(m.n) || [])[0];
+  return `<div class="m${m.rest ? ' rest' : ''}${first ? ' first' : ''}${(m.chords || []).length >= 3 ? ' many' : ''}${inAn ? ' anin' : ''}" data-n="${m.n}" style="--sc:${m._color || 'transparent'}${inAn ? ';--ac:' + kindOf(inAn)[1] : ''}">
     <span class="mn">${m.n}</span>${pill}
-    <div class="cs">${chords}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
+    <div class="cs">${chords}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}${anBadges(song._anAt.get(m.n))}<div class="prog"></div></div>`;
 }
 function renderChart() {
   const s = S.song; if (!s) return;
@@ -569,8 +590,10 @@ function renderChart() {
   S.lastMeasureKey = null; markLoop();
 }
 $('#chart').addEventListener('click', e => {
+  const ab = e.target.closest('.an'); if (ab && !S.editing) { showAnnotation(ab.dataset.a); return; }
   const el = e.target.closest('.m'); if (!el) return;
-  onMeasureTap(+el.dataset.n);
+  const c = e.target.closest('.c[data-b]');   // tapped a chord: go straight to it
+  onMeasureTap(+el.dataset.n, c ? +c.dataset.b : null);
 });
 
 /* ---- sheet rendering ---- */
@@ -673,15 +696,16 @@ function focusMeasureHTML(s, k, j) {
   if (m.chords && m.chords.length) {
     cs = m.chords.map(([c, b], i) => {
       const nb = i + 1 < m.chords.length ? m.chords[i + 1][1] : m._beats + 1;
-      return `<span class="c${/\?$/.test(c) ? ' unsure' : ''}" style="flex:${Math.max(0.5, nb - b)} 1 0">${chordHTML(c, s)}</span>`;
+      return `<span class="c${/\?$/.test(c) ? ' unsure' : ''}" data-b="${b}" style="flex:${Math.max(0.5, nb - b)} 1 0">${chordHTML(c, s)}</span>`;
     }).join('');
     const lead = m.chords[0][1] - 1, held = chordAt(s, k - 0.001);
     if (lead > 0.01) cs = `<span class="c carry" style="flex:${lead} 1 0">${held ? chordHTML(held, s) : ''}</span>` + cs;
   } else if (m.rest) cs = '<span class="c">–</span>';
   else if (j === 0) { const held = chordAt(s, k); cs = `<span class="c carry">${held ? chordHTML(held, s) : '%'}</span>`; }
   else cs = '<span class="c hold">%</span>';
-  return `<div class="fm${m.rest ? ' rest' : ''}${(m.chords || []).length >= 3 ? ' many' : ''}" data-k0="${k}" data-k1="${k}" style="--sc:${m._color || 'var(--line)'}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
-    <div class="cs">${cs}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}<div class="prog"></div></div>`;
+  const ans = anActive(s, k), inAn = ans[0];
+  return `<div class="fm${m.rest ? ' rest' : ''}${(m.chords || []).length >= 3 ? ' many' : ''}${inAn ? ' anin' : ''}" data-k0="${k}" data-k1="${k}" style="--sc:${m._color || 'var(--line)'}${inAn ? ';--ac:' + kindOf(inAn)[1] : ''}"><span class="mn">${m.n}</span>${m.mark ? `<span class="mk">${esc(m.mark)}</span>` : ''}
+    <div class="cs">${cs}</div>${m.text ? `<div class="tx">${esc(m.text)}</div>` : ''}${anBadges(ans.filter(a => a.n0 === m.n))}<div class="prog"></div></div>`;
 }
 function focusLineHTML(s, ln, li, cur) {
   const sc = ln.sec, name = sc.label ? sc.name + (sc.mark ? ' · ' + sc.mark : '') : (sc.jump ? 'tilbake til takt ' : 'takt ') + sc.n0;
@@ -728,6 +752,12 @@ function renderFocus(k) {
       const left = sec.k1 - k + 1, nn = nx.label ? nx.name : 'takt ' + nx.n0;
       txt += (txt ? ' · ' : '') + `<span style="color:${nx.color || 'var(--accent)'}">Neste: ${nx.jump ? '↺ ' : ''}${esc(nn)} (takt ${nx.n0})</span> om ${left} takt${left > 1 ? 'er' : ''}`;
     }
+    // rehearsal notes: the ones in effect here, and the ones starting within two measures
+    const now = anActive(s, k), soon = [];
+    for (let i = k + 1; i <= k + 2 && i < s._exp.length; i++) anActive(s, i).forEach(a => { if (a.n0 === s._exp[i] && !now.includes(a) && !soon.some(x => x.a === a)) soon.push({ a, d: i - k }); });
+    const lines = now.slice(0, 2).map(a => anLine(a, '')).concat(soon.slice(0, 1).map(x => anLine(x.a, `Om ${x.d} takt${x.d > 1 ? 'er' : ''}: `)));
+    if (lines.length) txt = (txt ? `<div>${txt}</div>` : '') + lines.join('');
+    else if (txt) txt = `<div>${txt}</div>`;
   } else { $('#fMark').classList.add('hidden'); $('#fSecPos').textContent = ''; }
   $('#fText').innerHTML = txt;
 }
@@ -740,11 +770,13 @@ function updateBeats(s, p, k) {
   $('#fBeats').innerHTML = Array.from({ length: nb }, (_, i) => `<i class="${i === b ? 'on' : i < b ? 'done' : ''}"></i>`).join('');
 }
 $('#fLane').addEventListener('click', e => {
+  const ab = e.target.closest('.an'); if (ab) { showAnnotation(ab.dataset.a); return; }
   const el = e.target.closest('.fm[data-k0]'); if (!el || !S.song) return;
-  const k = +el.dataset.k0;
+  const k = +el.dataset.k0, c = e.target.closest('.c[data-b]');
   if (S.editing || S.loopPick || (S.syncing && S.anchorPending)) { onMeasureTap(S.song._exp[k]); return; }
-  gotoExp(k);
+  gotoExp(k, c ? +c.dataset.b : null);
 });
+$('#fText').addEventListener('click', e => { const ab = e.target.closest('[data-a]'); if (ab) showAnnotation(ab.dataset.a); });
 
 /* ---- roadmap: sections in performance order ---- */
 /* a timeline of the song: one block per part in play order, width by length, colored by part type */
@@ -774,7 +806,7 @@ function roadmapProgress(p) {
   $('.sp', b).style.width = clamp((p - c.k0) / (c.k1 - c.k0 + 1) * 100, 0, 100).toFixed(1) + '%';
 }
 $('#roadmap').addEventListener('click', e => { const b = e.target.closest('.sec'); if (b && S.song) gotoExp(S.song._lsecs[+b.dataset.i].k0); });
-function gotoExp(k) { const s = S.song, n = s._exp[k]; return gotoMeasure(n, occurrences(s, n).indexOf(k)); }
+function gotoExp(k, beat) { const s = S.song, n = s._exp[k]; return gotoMeasure(n, occurrences(s, n).indexOf(k), beat); }
 function beatsBetween(s, a, b) {
   let tot = 0, k = Math.floor(a);
   while (k < b && k < s._exp.length) { const m = s._byN.get(s._exp[k]); const lo = Math.max(a, k), hi = Math.min(b, k + 1); tot += (hi - lo) * m._beats; k++; }
@@ -860,42 +892,39 @@ $('#scrub').addEventListener('input', () => { scrubbing = true; if (audio.durati
 $('#scrub').addEventListener('change', () => { scrubbing = false; });
 
 /* jump to measure */
-async function gotoMeasure(n, occIdx) {
+/* beat: jump to that beat of the measure (a tapped chord) instead of its start. Without an explicit occurrence the
+   one nearest to where we are now is used, so tapping a chord a bit back or ahead stays in the same pass. */
+async function gotoMeasure(n, occIdx, beat) {
   const s = S.song; const occ = occurrences(s, n);
   if (!occ.length) { toast('Takt ' + n + ' finnes ikke'); return; }
-  if (L.on) {
-    // live: the occurrence closest to where we are (the band is usually near), and keep the clock running from there
-    const p = curExpPos() || 0;
-    const k = occIdx != null && occ[occIdx] != null ? occ[occIdx] : occ.reduce((a, b) => Math.abs(b - p) < Math.abs(a - p) ? b : a);
-    seekPos(k); return;
-  }
+  const m = s._byN.get(n), off = beat ? clamp((beat - 1) / m._beats, 0, 0.999) + 1e-4 : 0;
+  const p = curExpPos() || 0;
+  const near = () => occIdx != null && occ[occIdx] != null ? occ[occIdx] : occ.reduce((a, b) => Math.abs(b + off - p) < Math.abs(a + off - p) ? b : a);
+  if (L.on) { seekPos(near() + off); return; }   // live: keep the clock running from there
   const r = rec(s);
-  if (!r || !r.map || !r.map.length) {
-    let k = occ.find(x => x > (S.cursor == null ? -1 : S.cursor)); if (occIdx != null) k = occ[occIdx]; if (k == null) k = occ[0];
-    S.cursor = k; S.pos = null; updateNow(true); return;
-  }
+  if (!r || !r.map || !r.map.length) { S.cursor = near() + off; S.pos = null; updateNow(true); return; }
   await whenReady();
   const t = audio.currentTime;
   // candidate (k, time) pairs
   let cands = [];
-  occ.forEach((k, oi) => timesAt(r.map, k).forEach(tt => cands.push({ k, oi, t: tt })));
+  occ.forEach((k, oi) => timesAt(r.map, k + off).forEach(tt => cands.push({ k, oi, t: tt })));
   if (occIdx != null) cands = cands.filter(c => c.oi === occIdx);
   if (!cands.length) {
     toast(`Takt ${n} er ikke med i dette opptaket`);
     S.cursor = occ[0]; S.pos = null; updateNow(true); return;
   }
-  cands.sort((a, b) => a.t - b.t);
-  const c = cands.find(c => c.t > t + 0.3) || cands[0];
+  // an explicit pass: its first playing in the recording; otherwise the playing nearest to the current time
+  const c = occIdx != null ? cands.sort((a, b) => a.t - b.t)[0] : cands.sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t))[0];
   let target = c.t;
-  if (settings.preroll && c.k > 0) { const pre = timesAt(r.map, c.k - 1).filter(x => x < c.t && c.t - x < 12); if (pre.length) target = Math.max(...pre); }
+  if (settings.preroll && !beat && c.k > 0) { const pre = timesAt(r.map, c.k - 1).filter(x => x < c.t && c.t - x < 12); if (pre.length) target = Math.max(...pre); }
   audio.currentTime = Math.max(0, target);
-  S.cursor = c.k; onTime();
+  S.cursor = c.k + off; onTime();
 }
-function onMeasureTap(n) {
+function onMeasureTap(n, beat) {
   if (S.editing) { editMeasure(n); return; }
   if (S.loopPick) { pickLoop(n); return; }
   if (S.syncing && S.anchorPending) { S.anchorPending = false; setAnchorAt(n); return; }
-  gotoMeasure(n);
+  gotoMeasure(n, null, beat);
 }
 $('#btnGoto').onclick = async () => {
   const n = await numpad('Gå til takt'); if (n == null) return;
@@ -1477,6 +1506,142 @@ async function stopTap(save) {
   const keep = (r.map || []).filter(p => p[0] < t0 - 0.05 || p[0] > t1 + d + 0.05);
   r.map = keep.concat(pts).sort((a, b) => a[0] - b[0]);
   await saveMap(r); toast(`${pts.length - 1} takter tappet inn ✓`);
+}
+
+/* ================= Øvingsnotater: notes on measure ranges (from the rehearsal agent, or written here) =================
+   song.annotations: [{id, n0, n1, kind, text, who, date, occ, quote, clip (file id of the conductor's words), src: 'øving'|'mine', hidden}] */
+const KINDS = {
+  dynamikk: ['Dynamikk', '#f472b6', '<>'], intensitet: ['Intensitet', '#f87171', '▲'], tempo: ['Tempo', '#60a5fa', '♩'],
+  artikulasjon: ['Artikulasjon', '#34d399', '>'], balanse: ['Balanse', '#fbbf24', '⇅'], form: ['Form', '#a78bfa', '↺'],
+  innsats: ['Innsats', '#fb923c', '!'], generelt: ['Generelt', '#9ca3af', 'i'], mitt: ['Mitt notat', '#22d3ee', '✎'],
+};
+const kindOf = a => KINDS[a.kind] || KINDS.generelt;
+const fmtDate = d => { const m = /^(\d{4})-(\d\d)-(\d\d)/.exec(d || ''); return m ? `${+m[3]}.${+m[2]}.` : (d || ''); };
+const anRange = a => a.n1 != null && a.n1 !== a.n0 ? `t. ${a.n0}–${a.n1}` : `t. ${a.n0}`;
+const anFind = id => ((S.song && S.song.annotations) || []).find(a => a.id === id);
+/* notes in effect at expanded position k (a note can be for one pass only: occ = 1, 2 …) */
+function anActive(s, k) {
+  const n = s._exp[k], list = s._anIn.get(n); if (!list) return [];
+  let oi = null;
+  return list.filter(a => { if (!a.occ) return true; if (oi == null) oi = occurrences(s, n).indexOf(k); return oi === a.occ - 1; });
+}
+function anBadges(list) {
+  if (!list || !list.length) return '';
+  return `<span class="ans">${list.slice(0, 3).map(a => { const [, col, g] = kindOf(a); return `<button class="an" data-a="${esc(a.id)}" style="--ac:${col}" aria-label="${esc(kindOf(a)[0])}">${esc(g)}</button>`; }).join('')}</span>`;
+}
+function anLine(a, pre) {
+  const [name, col, g] = kindOf(a), who = a.src === 'mine' ? 'Meg' : 'Dirigent';
+  return `<div class="fan" data-a="${esc(a.id)}" style="--ac:${col}"><span class="ang">${esc(g)}</span>${esc(pre)}<b>${esc(a.text)}</b>
+    <span class="anm">${esc(anRange(a))} · ${who}${a.date ? ' ' + esc(fmtDate(a.date)) : ''}${a.clip ? ' · ▶' : ''}</span></div>`;
+}
+function updateNotesBtn() {
+  const s = S.song, n = s ? (s.annotations || []).filter(a => !a.hidden).length : 0;
+  $('#notesCount').textContent = n ? n : '';
+}
+/* the conductor's words: a short clip played on its own player (pauses the backing track) */
+const clipAudio = new Audio(); let clipUrl = null;
+clipAudio.addEventListener('ended', () => $$('[data-clip].on').forEach(b => b.classList.remove('on')));
+async function playClip(a, btn) {
+  if (!a.clip) return;
+  if (!clipAudio.paused && clipAudio.dataset.id === a.id) { clipAudio.pause(); if (btn) btn.classList.remove('on'); return; }
+  const f = await DB.get('files', a.clip); if (!f) { toast('Fant ikke lydklippet'); return; }
+  if (clipUrl) URL.revokeObjectURL(clipUrl);
+  clipUrl = URL.createObjectURL(f.blob); clipAudio.src = clipUrl; clipAudio.dataset.id = a.id;
+  if (!audio.paused) audio.pause();
+  clipAudio.play().then(() => { if (btn) btn.classList.add('on'); }).catch(e => toast('Kan ikke spille: ' + e.message));
+}
+function showAnnotation(id) {
+  const a = anFind(id); if (!a) return;
+  const [name, col, g] = kindOf(a);
+  modal(`${name} · ${anRange(a)}`, `
+    <div class="anbox" style="--ac:${col}"><span class="ang big">${esc(g)}</span><div>
+      <div class="antext">${esc(a.text)}</div>
+      <div class="muted small">${a.src === 'mine' ? 'Mitt notat' : 'Dirigent'}${a.date ? ' · øving ' + esc(fmtDate(a.date)) : ''}${a.who ? ' · gjelder ' + esc(a.who) : ''}${a.occ ? ` · ${a.occ}. gang` : ''}</div>
+      ${a.quote ? `<div class="anquote">«${esc(a.quote)}»</div>` : ''}</div></div>
+    <div class="row2" style="margin-top:14px">
+      ${a.clip ? '<button class="btn primary" id="aClip" data-clip>▶ Hør dirigenten</button>' : ''}
+      <button class="btn" id="aGo">Gå til takt ${a.n0}</button>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="aEdit">Rediger</button>
+    </div>`, body => {
+    if (a.clip) $('#aClip', body).onclick = e => playClip(a, e.currentTarget);
+    $('#aGo', body).onclick = () => { closeModal(); gotoMeasure(a.n0, a.occ ? a.occ - 1 : null); };
+    $('#aEdit', body).onclick = () => editAnnotation(a);
+  });
+}
+$('#btnNotes').onclick = () => openNotes();
+function openNotes() {
+  const s = S.song; if (!s) return;
+  const f = S.noteFilter || (S.noteFilter = { kind: null, date: null });
+  const all = (s.annotations || []).filter(a => !a.hidden);
+  const ord = a => { const m = s._byN.get(a.n0); return m ? m._i : 1e9; };
+  const list = all.filter(a => (!f.kind || a.kind === f.kind) && (!f.date || (a.date || '') === f.date))
+    .sort((a, b) => ord(a) - ord(b) || (a.date || '').localeCompare(b.date || ''));
+  const kinds = [...new Set(all.map(a => a.kind in KINDS ? a.kind : 'generelt'))], dates = [...new Set(all.map(a => a.date).filter(Boolean))].sort().reverse();
+  const chip = (k, v, label, col) => `<button class="chip${f[k] === v ? ' on' : ''}" data-f="${k}" data-v="${esc(v == null ? '' : v)}"${col ? ` style="--ac:${col}"` : ''}>${label}</button>`;
+  const sums = (s.rehearsals || []).filter(r => r.summary && (!f.date || r.date === f.date));
+  modal(`Øvingsnotater – ${s.title}`, `
+    ${sums.map(r => `<div class="ansum"><b>Øving ${esc(fmtDate(r.date))}:</b> ${esc(r.summary)}</div>`).join('')}
+    ${all.length ? `<div class="chips">${chip('kind', null, 'Alle')}${kinds.map(k => chip('kind', k, esc(KINDS[k][0]), KINDS[k][1])).join('')}
+      ${dates.length > 1 ? '<span class="chipsep"></span>' + chip('date', null, 'Alle øvinger') + dates.map(d => chip('date', d, esc(fmtDate(d)))).join('') : ''}</div>` : ''}
+    <div class="anlist">${list.map(a => { const [name, col, g] = kindOf(a); return `<div class="anrow" data-a="${esc(a.id)}" style="--ac:${col}">
+      <span class="ang">${esc(g)}</span><span class="anr">${esc(anRange(a))}${a.occ ? `<small>${a.occ}. gang</small>` : ''}</span>
+      <span class="ant"><b>${esc(a.text)}</b><small>${esc(name)} · ${a.src === 'mine' ? 'meg' : 'dirigent'}${a.date ? ' ' + esc(fmtDate(a.date)) : ''}${a.who ? ' · ' + esc(a.who) : ''}</small></span>
+      ${a.clip ? '<button class="btn ghost" data-clip>▶</button>' : ''}<button class="btn ghost" data-edit>✎</button></div>`; }).join('')
+      || `<div class="empty small">${all.length ? 'Ingen notater med dette filteret.' : 'Ingen notater for denne sangen ennå.<br>Notater fra øvingsopptak kommer med datafila; egne notater legger du til her.'}</div>`}</div>
+    <div class="row2" style="margin-top:12px"><button class="btn primary" id="aNew">+ Nytt notat ved takt ${s._exp[Math.floor(curExpPos() || 0)]}</button></div>`, body => {
+    $$('[data-f]', body).forEach(b => b.onclick = () => { f[b.dataset.f] = b.dataset.v || null; openNotes(); });
+    $$('.anrow', body).forEach(row => row.onclick = e => {
+      const a = anFind(row.dataset.a); if (!a) return;
+      if (e.target.closest('[data-clip]')) { playClip(a, e.target.closest('[data-clip]')); return; }
+      if (e.target.closest('[data-edit]')) { editAnnotation(a); return; }
+      closeModal(); gotoMeasure(a.n0, a.occ ? a.occ - 1 : null);
+    });
+    $('#aNew', body).onclick = () => editAnnotation(null);
+  });
+}
+function editAnnotation(a) {
+  const s = S.song, isNew = !a, k = Math.floor(curExpPos() || 0);
+  const n0 = a ? a.n0 : s._exp[k], occN = Math.max(1, occurrences(s, n0).length);
+  const x = a || { n0, n1: n0, kind: 'mitt', text: '', who: '', occ: null };
+  modal(isNew ? 'Nytt notat' : 'Rediger notat', `
+    <div class="row2">
+      <div class="field" style="flex:1"><label>Fra takt</label><input type="number" id="aN0" value="${x.n0}"></div>
+      <div class="field" style="flex:1"><label>Til takt</label><input type="number" id="aN1" value="${x.n1 != null ? x.n1 : x.n0}"></div>
+      <div class="field" style="flex:2"><label>Type</label><select id="aK">${Object.entries(KINDS).map(([k, [nm]]) => `<option value="${k}"${k === (x.kind in KINDS ? x.kind : 'generelt') ? ' selected' : ''}>${nm}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label>Notat</label><textarea id="aT" placeholder="F.eks. «Mer intensitet fra her, bygg mot refrenget»">${esc(x.text)}</textarea></div>
+    <div class="row2">
+      <div class="field" style="flex:2"><label>Gjelder hvem</label><input type="text" id="aW" value="${esc(x.who || '')}" placeholder="alle / komp / meg"></div>
+      <div class="field" style="flex:1"><label>Hvilken gang</label><select id="aO"><option value="">Hver gang</option>${Array.from({ length: Math.max(occN, x.occ || 0) }, (_, i) => `<option value="${i + 1}"${x.occ === i + 1 ? ' selected' : ''}>${i + 1}. gang</option>`).join('')}</select></div>
+    </div>
+    <div class="row2">
+      ${isNew ? '' : '<button class="btn danger" id="aDel">Slett</button>'}
+      <div class="spacer"></div><button class="btn primary" id="aSave">Lagre</button>
+    </div>`, body => {
+    setTimeout(() => $('#aT', body).focus(), 50);
+    const done = async () => { s.notesEdited = true; await saveSong(s); renderChart(); S.focusLi = null; S.lastMeasureKey = null; updateNow(true); updateNotesBtn(); };
+    $('#aSave', body).onclick = async () => {
+      const v = { n0: +$('#aN0', body).value, n1: +$('#aN1', body).value || +$('#aN0', body).value, kind: $('#aK', body).value, text: $('#aT', body).value.trim(), who: $('#aW', body).value.trim(), occ: +$('#aO', body).value || null };
+      if (!s._byN.get(v.n0)) { toast(`Takt ${v.n0} finnes ikke`); return; }
+      if (!s._byN.get(v.n1) || s._byN.get(v.n1)._i < s._byN.get(v.n0)._i) v.n1 = v.n0;
+      if (!v.text) { toast('Skriv et notat'); return; }
+      if (isNew) (s.annotations = s.annotations || []).push(Object.assign({ id: 'u-' + Date.now().toString(36), src: 'mine', date: new Date().toISOString().slice(0, 10) }, v));
+      else Object.assign(a, v, { edited: true });
+      await done(); closeModal(); toast('Notat lagret ✓');
+    };
+    if (!isNew) $('#aDel', body).onclick = async () => {
+      if (!confirm('Slette notatet?')) return;
+      // notes from the data file are hidden (so a re-import does not bring them back); my own are removed
+      if (a.src === 'mine') s.annotations = s.annotations.filter(y => y !== a); else a.hidden = true;
+      await done(); closeModal();
+    };
+  });
+}
+/* keep my own notes and my changes to imported ones when a new data file arrives */
+function mergeAnnotations(fresh, old) {
+  const mine = (old || []).filter(a => a.src === 'mine'), changed = new Map((old || []).filter(a => a.src !== 'mine' && (a.edited || a.hidden)).map(a => [a.id, a]));
+  return (fresh || []).map(a => changed.get(a.id) || a).concat(mine);
 }
 
 /* ================= Boot ================= */
