@@ -2,7 +2,7 @@
    Data lives in IndexedDB (imported from a .korps bundle); the app shell is cached by sw.js. */
 'use strict';
 
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.5.0';
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -496,7 +496,7 @@ async function openSong(id) {
   wake(true);
 }
 function closeSong() {
-  liveStop(); audio.pause(); wake(false);
+  liveStop(); micStop(); audio.pause(); wake(false);
   if (S.objUrl) { URL.revokeObjectURL(S.objUrl); S.objUrl = null; }
   S.pageUrls.forEach(u => URL.revokeObjectURL(u)); S.pageUrls = [];
   S.song = null; $('#songView').classList.add('hidden'); $('#listView').classList.remove('hidden'); renderList();
@@ -720,25 +720,27 @@ function focusLineHTML(s, ln, li, cur) {
 }
 function renderFocus(k) {
   const s = S.song; if (S.mode !== 'focus' || !s) return;
-  const li = k == null ? 0 : s._lineOf[k];
+  const lane = $('#fLane'), li = k == null ? 0 : s._lineOf[k];
+  // the whole song is in the lane (it scrolls); S.focusLi = null rebuilds it
+  if (S.focusLi == null) {
+    lane.innerHTML = s._lines.map((ln, i) => focusLineHTML(s, ln, i, false)).join('') + '<div class="fend">Slutt</div>';
+    S.focusLi = -1;
+  }
   if (li !== S.focusLi) {
+    const far = S.focusLi < 0 || Math.abs(li - S.focusLi) > 2;
     S.focusLi = li;
-    // as many lines as fit under the now/next panel
-    const nl = clamp(1 + Math.floor(($('#fLane').clientHeight - 104 * settings.fs - 32) / (84 * settings.fs + 26)), 2, 8);
-    const out = [];
-    for (let i = li; i < Math.min(s._lines.length, li + nl); i++) out.push(focusLineHTML(s, s._lines[i], i, i === li));
-    if (li + nl >= s._lines.length) out.push('<div class="fend">Slutt</div>');
-    $('#fLane').innerHTML = out.join('');
+    Array.from(lane.children).forEach((e, i) => { e.classList.toggle('now', i === li); e.classList.toggle('past', i < li); });
+    focusFollow(!far);
   }
   $$('#fLane .fm.cur').forEach(e => { e.classList.remove('cur'); const pr = $('.prog', e); if (pr) pr.style.width = 0; });
   let txt = '';
   if (k != null) {
-    const e = $$('#fLane .fm[data-k0]').find(e => +e.dataset.k0 <= k && k <= +e.dataset.k1);
+    const e = $$('.fm[data-k0]', lane.children[li]).find(e => +e.dataset.k0 <= k && k <= +e.dataset.k1);
     if (e) {
       e.classList.add('cur');
       const left = $('.rleft', e); if (left) left.textContent = `${+e.dataset.k1 - k + 1} igjen`;
     }
-    const li = s._lsecOf[k], sec = s._lsecs[li], nx = s._lsecs[li + 1];
+    const si = s._lsecOf[k], sec = s._lsecs[si], nx = s._lsecs[si + 1];
     $('#fMark').textContent = sec.label ? sec.name + (sec.mark ? ' · ' + sec.mark : '') : 'takt ' + sec.n0 + '–' + sec.n1;
     $('#fMark').style.background = sec.color || 'var(--bg3)'; $('#fMark').style.color = sec.color ? '#111' : 'var(--fg)';
     $('#fMark').classList.remove('hidden');
@@ -769,6 +771,19 @@ function updateBeats(s, p, k) {
   if (key === S.beatKey) return; S.beatKey = key;
   $('#fBeats').innerHTML = Array.from({ length: nb }, (_, i) => `<i class="${i === b ? 'on' : i < b ? 'done' : ''}"></i>`).join('');
 }
+/* keep the playing line second from the top (the line before it stays visible to tap back to),
+   unless the lane was scrolled by hand in the last few seconds */
+function focusFollow(smooth) {
+  const lane = $('#fLane'), cur = lane.children[S.focusLi]; if (!cur || Date.now() < S.fHold) return;
+  const prev = lane.children[S.focusLi - 1];
+  lane.scrollTo({ top: prev ? prev.offsetTop - 4 : 0, behavior: smooth ? 'smooth' : 'auto' });
+}
+(function () {
+  const lane = $('#fLane');
+  lane.addEventListener('touchstart', () => { S.fHold = Infinity; }, { passive: true });
+  lane.addEventListener('touchend', () => { S.fHold = Date.now() + 5000; }, { passive: true });
+  lane.addEventListener('wheel', () => { S.fHold = Date.now() + 5000; }, { passive: true });
+})();
 $('#fLane').addEventListener('click', e => {
   const ab = e.target.closest('.an'); if (ab) { showAnnotation(ab.dataset.a); return; }
   const el = e.target.closest('.fm[data-k0]'); if (!el || !S.song) return;
@@ -895,6 +910,7 @@ $('#scrub').addEventListener('change', () => { scrubbing = false; });
 /* beat: jump to that beat of the measure (a tapped chord) instead of its start. Without an explicit occurrence the
    one nearest to where we are now is used, so tapping a chord a bit back or ahead stays in the same pass. */
 async function gotoMeasure(n, occIdx, beat) {
+  S.fHold = 0;   // a jump brings the focus lane back to following
   const s = S.song; const occ = occurrences(s, n);
   if (!occ.length) { toast('Takt ' + n + ' finnes ikke'); return; }
   const m = s._byN.get(n), off = beat ? clamp((beat - 1) / m._beats, 0, 0.999) + 1e-4 : 0;
@@ -936,9 +952,10 @@ $('#btnGoto').onclick = async () => {
 };
 /* move to an expanded position: live clock, recording (via its map), or just the cursor */
 function seekPos(p) {
+  S.fHold = 0;
   const s = S.song; p = clamp(p, 0, s._exp.length - 0.001);
   if (L.on) {
-    if (L.running) { L.p0 = p; L.t0 = clockNow(); L.sched = null; S.pos = p; }
+    if (L.running) { L.p0 = L.pS = p; L.t0 = L.tS = clockNow(); L.sched = null; S.pos = p; }
     else { S.cursor = p; S.pos = null; }
     updateNow(true); return;
   }
@@ -966,20 +983,56 @@ $('#btnPrev').onclick = () => stepChord(-1);
 $('#btnNext').onclick = () => stepChord(1);
 
 /* ================= Live: tempo/tap-driven cursor + metronome ================= */
-const L = { on: false, running: false, bpm: 100, t0: 0, p0: 0, taps: [], sched: null };
+const L = { on: false, running: false, bpm: 100, base: 100, t0: 0, p0: 0, tS: 0, pS: 0, taps: [], sched: null };   // base: the tempo set by hand/tapping; tS/pS: the last start
 let actx = null;
+/* call from a user gesture: creates/unlocks the click sound. iOS suspends or 'interrupts' the audio context when the app
+   goes to the background (or another app plays sound) and only lets it start again inside a gesture, so this also runs
+   on every touch/key while the click or the microphone is in use. An interrupted context is replaced. */
 function ac() {
+  if (actx && (actx.state === 'closed' || actx.state === 'interrupted')) { try { actx.close(); } catch (e) { } actx = null; }
   if (!actx) {
-    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { }   // iOS 17: click also with the silent switch on
+    try { if (navigator.audioSession) navigator.audioSession.type = M.on ? 'play-and-record' : 'playback'; } catch (e) { }   // iOS 17: click also with the silent switch on
     try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
   }
-  if (actx.state === 'suspended') actx.resume();
+  if (actx.state !== 'running') actx.resume().catch(() => { });
+  // a silent buffer started inside the gesture is what unlocks output on older iOS versions
+  try { const src = actx.createBufferSource(); src.buffer = actx.createBuffer(1, 1, 22050); src.connect(actx.destination); src.start(0); } catch (e) { }
   return actx;
+}
+['touchend', 'mousedown', 'keydown'].forEach(ev => document.addEventListener(ev, () => {
+  if ((settings.metro || M.on) && (!actx || actx.state !== 'running')) { ac(); $('#btnMetro').classList.remove('warn'); }
+  if (M.ctx && M.ctx.state !== 'running') M.ctx.resume().catch(() => { });
+}, true));
+/* iOS before 17 (no audioSession): web audio is muted in silent mode unless a media element is playing, so a silent loop
+   keeps the live click audible */
+let keepAlive = null;
+function sessionKeepAlive(on) {
+  if (navigator.audioSession) return;
+  if (on) {
+    if (!keepAlive) {
+      const n = 4000, b = new Uint8Array(44 + n), v = new DataView(b.buffer), w = (o, t) => [...t].forEach((c, i) => b[o + i] = c.charCodeAt(0));
+      w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true);
+      b.fill(128, 44);
+      keepAlive = new Audio(URL.createObjectURL(new Blob([b], { type: 'audio/wav' }))); keepAlive.loop = true;
+    }
+    keepAlive.play().catch(() => { });
+  } else if (keepAlive) keepAlive.pause();
 }
 /* the live clock is the system clock; clicks are converted to the audio clock when scheduled */
 function clockNow() { return performance.now() / 1000; }
+let clickWarned = 0, clickDead = 0;
 function click(when, accent) {   // when: clockNow() seconds (0 = now)
-  const a = ac(); if (!a) return;
+  const a = actx;
+  if (!a || a.state !== 'running') {   // iOS has paused the sound (it comes back on the next touch); a fresh one takes a moment
+    clickDead = clickDead || Date.now();
+    if (Date.now() - clickDead > 1500) {
+      $('#btnMetro').classList.add('warn');
+      if (Date.now() - clickWarned > 8000) { clickWarned = Date.now(); toast('Klikket er satt på pause av iPaden – trykk hvor som helst på skjermen', 3000); }
+    }
+    return;
+  }
+  clickDead = 0;
   when = Math.max(a.currentTime, when ? a.currentTime + (when - clockNow()) : 0);
   const o = a.createOscillator(), g = a.createGain();
   o.frequency.value = accent ? 1760 : 1100;
@@ -1011,12 +1064,12 @@ function estimateBpm(s) {
 }
 function setBpm(v, save) {
   v = clamp(Math.round(v), 30, 260);
-  if (L.running) { const t = clockNow(); L.p0 = livePos(t); L.t0 = t; L.sched = null; }
-  L.bpm = v; $('#bpmNum').textContent = v;
+  if (L.running) { const t = clockNow(); L.p0 = L.pS = livePos(t); L.t0 = L.tS = t; L.sched = null; }
+  L.bpm = L.base = v; $('#bpmNum').textContent = v;
   if (save && S.song) { S.song.liveBpm = v; DB.put('songs', strip(S.song)); }
 }
 function setSource(live) {
-  L.on = live; liveStop();
+  L.on = live; liveStop(); if (!live) micStop();
   $$('#srcSeg button').forEach(b => b.classList.toggle('on', (b.dataset.src === 'live') === live));
   $('#transport').classList.toggle('live', live);
   if (live) { audio.pause(); S.pos = null; S.cursor = Math.floor(S.cursor || 0); }
@@ -1033,13 +1086,14 @@ function liveStart(atTime) {
   L.p0 = p;
   // count-in: one measure of clicks when the metronome is on (unless started by tapping, which is its own count-in)
   L.t0 = atTime != null ? atTime : clockNow() + (settings.metro ? nb * 60 / L.bpm : 0.05);
-  L.running = true; L.sched = null;
+  L.running = true; L.sched = null; L.lastClick = -1; L.tS = L.t0; L.pS = L.p0;
+  if (settings.metro) sessionKeepAlive(true);
   $('#btnPlay').textContent = '❚❚';
   requestAnimationFrame(liveTick);
 }
 function liveStop() {
   if (!L.running) return;
-  L.running = false; L.taps = [];
+  L.running = false; L.taps = []; sessionKeepAlive(false);
   const p = livePos(clockNow());
   S.cursor = Math.min(p, S.song ? S.song._exp.length - 0.001 : 0); S.pos = null;
   $('#btnPlay').textContent = '▶'; $('#btnTapLive').textContent = 'TAPP';
@@ -1056,6 +1110,7 @@ function liveTick() {
     const p = livePos(t);
     if (p >= s._exp.length) { liveStop(); return; }
     S.pos = p;
+    if (M.on && t > L.t0 + 1) micFollow(t);
   }
   if (settings.metro) scheduleClicks(t);
   updateNow(false);
@@ -1071,8 +1126,10 @@ function scheduleClicks(t) {
     let accent;
     if (b < 0) accent = (b + nbStart * 64) % nbStart === 0;      // count-in: accent on its first beat
     else { const p = advance(s, L.p0, b); accent = Math.abs(p - Math.round(p)) < 1e-6; }
-    click(when, accent);
     L.sched = b;
+    if (b >= 0 && M.on) continue;   // following the mic: only the count-in clicks (the mic would hear the click)
+    if (when < L.lastClick + spb / 2) continue;   // a re-anchored clock must not repeat a click already scheduled
+    click(when, accent); L.lastClick = when;
   }
 }
 /* TAPP: sets the tempo from the last taps; stopped = tap one measure to count in and start on the next beat;
@@ -1084,8 +1141,8 @@ function liveTap() {
   L.taps = L.taps.filter(x => t - x < 2.5).concat(t).slice(-6);
   const iv = []; for (let i = 1; i < L.taps.length; i++) iv.push(L.taps[i] - L.taps[i - 1]);
   const good = iv.filter(x => x > 0.2 && x < 2.2).slice(-4);
-  if (good.length) { const sorted = good.slice().sort((a, b) => a - b); L.bpm = clamp(Math.round(60 / sorted[sorted.length >> 1]), 30, 260); $('#bpmNum').textContent = L.bpm; }
-  if (settings.metro) click(0, false);
+  if (good.length) { const sorted = good.slice().sort((a, b) => a - b); L.bpm = L.base = clamp(Math.round(60 / sorted[sorted.length >> 1]), 30, 260); $('#bpmNum').textContent = L.bpm; }
+  if (settings.metro && !(M.on && L.running)) click(0, false);
   if (!L.running) {
     const p = Math.floor(curExpPos() || 0), nb = s._byN.get(s._exp[p])._beats, need = Math.min(nb, 4);
     if (L.taps.length >= need && good.length >= need - 1) { liveStart(t + 60 / L.bpm); L.taps = []; s.liveBpm = L.bpm; DB.put('songs', strip(s)); }
@@ -1096,7 +1153,7 @@ function liveTap() {
   // running: snap the phase to the nearest beat, keep the measure we are in
   const k = Math.floor(pNow), nb = s._byN.get(s._exp[k])._beats, f = (pNow - k) * nb, fr = Math.round(f);
   L.p0 = Math.abs(f - fr) < 0.45 ? (fr >= nb ? k + 1 : k + fr / nb) : pNow;
-  L.t0 = t; L.sched = null;
+  L.t0 = L.tS = t; L.pS = L.p0; L.sched = null;
 }
 $('#btnTapLive').addEventListener('touchstart', e => { e.preventDefault(); liveTap(); }, { passive: false });
 $('#btnTapLive').addEventListener('mousedown', e => { e.preventDefault(); liveTap(); });
@@ -1104,6 +1161,137 @@ $('#bpmMinus').onclick = () => setBpm(L.bpm - 2, true);
 $('#bpmPlus').onclick = () => setBpm(L.bpm + 2, true);
 $('#bpmVal').onclick = async () => { const v = await numpad('Tempo (slag per minutt)', L.bpm); if (v) setBpm(v, true); };
 $('#btnMetro').onclick = () => { ac(); settings.metro = !settings.metro; saveSettings(); $('#btnMetro').classList.toggle('on', settings.metro); L.sched = null; };
+
+/* ================= Live: follow the band's tempo through the microphone (optional) =================
+   Onsets (spectral flux) from the mic, then a tempo and beat estimate every half second (micFollow). It never changes
+   the measure: start with TAPP / ▶ as usual, the mic only keeps the cursor in step with the band. */
+const FN = 1024, FHOP = 512, RING = 1024;
+const M = { on: false, ctx: null, stream: null, node: null, sr: 48000, buf: new Float32Array(FN), prev: null, bands: [],
+  env: new Float32Array(RING), envN: 0, samples: 0, base: Infinity, last: 0, lock: 0 };
+const fftRe = new Float32Array(FN), fftIm = new Float32Array(FN);
+const hann = Float32Array.from({ length: FN }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / FN));
+const fftRev = Uint16Array.from({ length: FN }, (_, i) => { let r = 0; for (let b = 0; b < 10; b++) r |= ((i >> b) & 1) << (9 - b); return r; });
+const fftCos = Float32Array.from({ length: FN / 2 }, (_, i) => Math.cos(-2 * Math.PI * i / FN));
+const fftSin = Float32Array.from({ length: FN / 2 }, (_, i) => Math.sin(-2 * Math.PI * i / FN));
+function fft(re, im) {
+  for (let i = 0; i < FN; i++) { const j = fftRev[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+  for (let size = 2; size <= FN; size <<= 1) {
+    const half = size >> 1, step = FN / size;
+    for (let i = 0; i < FN; i += size) for (let j = 0; j < half; j++) {
+      const c = fftCos[j * step], sn = fftSin[j * step], a = i + j, b = a + half;
+      const tr = re[b] * c - im[b] * sn, ti = re[b] * sn + im[b] * c;
+      re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+    }
+  }
+}
+function micBands() {
+  const kmax = Math.min(FN / 2, Math.round(6000 * FN / M.sr)), e = [];
+  for (let i = 0; i <= 24; i++) e.push(Math.round(Math.pow(kmax - 1, i / 24)));
+  M.bands = [...new Set(e)].map((a, i, u) => [a, u[i + 1]]).slice(0, -1);
+  M.prev = new Float32Array(M.bands.length);
+}
+function micProcess(e) {
+  const x = e.inputBuffer.getChannelData(0);
+  e.outputBuffer.getChannelData(0).fill(0);
+  // clock time of the first sample: the earliest estimate wins (callbacks only ever run late)
+  M.base = Math.min(M.base, clockNow() - (M.samples + x.length) / M.sr);
+  for (let o = 0; o + FHOP <= x.length; o += FHOP) {
+    M.buf.copyWithin(0, FHOP); M.buf.set(x.subarray(o, o + FHOP), FN - FHOP);
+    for (let i = 0; i < FN; i++) { fftRe[i] = M.buf[i] * hann[i]; fftIm[i] = 0; }
+    fft(fftRe, fftIm);
+    let flux = 0;
+    M.bands.forEach(([a, b], j) => {
+      let sum = 0; for (let k = a; k < b; k++) sum += Math.hypot(fftRe[k], fftIm[k]);
+      const m = Math.log(1 + 100 * sum / (b - a));
+      if (m > M.prev[j]) flux += m - M.prev[j];
+      M.prev[j] = m;
+    });
+    M.env[M.envN % RING] = flux; M.envN++;
+  }
+  M.samples += x.length;
+}
+/* clock time of onset frame i: the middle of the newest hop in its window */
+const micT = i => M.base + ((i + 1) * FHOP - FHOP / 2) / M.sr;
+/* every half second: (1) tempo = the strongest periodicity of the last 8 s of onsets within ±10 % of the tempo you set
+   (beat + eighth harmonic), (2) phase = where the onsets of the last 3 s fall in the cursor's beat; nudged a third of the way.
+   Without a clear beat (talk, held chords, rubato) it leaves the cursor running at the last tempo. Tuned offline on
+   rehearsal takes (24.10.): within ~0.2 beat where the band plays a clear beat, but it can slip a beat in vague passages. */
+function micFollow(t) {
+  if (t - M.last < 0.5) return; M.last = t;
+  const fr = M.sr / FHOP, N = Math.min(M.envN, Math.round(8 * fr));
+  if (N < 3 * fr) return;
+  const i0 = M.envN - N, e = new Float32Array(N), h = Math.round(0.2 * fr);
+  for (let i = 0; i < N; i++) e[i] = M.env[(i0 + i) % RING];
+  // detrend: minus the mean of the surrounding 0.4 s, negatives dropped
+  const cs = new Float64Array(N + 1); for (let i = 0; i < N; i++) cs[i + 1] = cs[i] + e[i];
+  let w = 0;
+  const x = e.map((v, i) => { const a = Math.max(0, i - h), b = Math.min(N, i + h + 1), r = Math.max(0, v - (cs[b] - cs[a]) / (b - a)); w += r; return r; });
+  if (w < 1e-6) return;
+  // (1) tempo spectrum on a 0.25 bpm grid, by rotating phasors
+  const lo = L.base / 1.1, hi = L.base * 1.1, sc = [];
+  for (let b = lo; b <= hi; b += 0.25) {
+    const f = b / 60 / fr, c1 = Math.cos(2 * Math.PI * f), s1 = Math.sin(2 * Math.PI * f), c2 = c1 * c1 - s1 * s1, s2 = 2 * s1 * c1;
+    let ar = 1, ai = 0, br = 1, bi = 0, z1r = 0, z1i = 0, z2r = 0, z2i = 0;
+    for (let i = 0; i < N; i++) {
+      z1r += x[i] * ar; z1i += x[i] * ai; z2r += x[i] * br; z2i += x[i] * bi;
+      const t1 = ar * c1 - ai * s1; ai = ar * s1 + ai * c1; ar = t1;
+      const t2 = br * c2 - bi * s2; bi = br * s2 + bi * c2; br = t2;
+    }
+    sc.push([b, (Math.hypot(z1r, z1i) + 0.5 * Math.hypot(z2r, z2i)) / w]);
+  }
+  let j = 0; sc.forEach((v, i) => { if (v[1] > sc[j][1]) j = i; });
+  const med = sc.map(v => v[1]).sort((a, b) => a - b)[sc.length >> 1], conf = sc[j][1] / med;
+  M.dbg = { conf, bpmEst: sc[j][0] };
+  if (conf > 2.5 && j > 0 && j < sc.length - 1) {
+    // the first seconds after a start: the tapped tempo was a guess, so the cursor is re-derived from the start at the
+    // measured tempo (otherwise it locks one beat off); after that the tempo only moves part of the way
+    if (t - L.tS < 12) { L.bpm = sc[j][0]; L.p0 = advance(S.song, L.pS, (t - L.tS) * L.bpm / 60); }
+    else { L.p0 = livePos(t); L.bpm += 0.4 * (sc[j][0] - L.bpm); }
+    L.t0 = t; L.sched = null;
+    $('#bpmNum').textContent = Math.round(L.bpm);
+  }
+  // (2) phase over the last 3 s, by the cursor's clock
+  const s = S.song, k = Math.floor(L.p0), off = (L.p0 - k) * s._byN.get(s._exp[k])._beats, bps = L.bpm / 60;
+  let zr = 0, zi = 0, ww = 0;
+  for (let i = Math.max(0, N - Math.round(3 * fr)); i < N; i++) {
+    if (!x[i]) continue;
+    const ph = 2 * Math.PI * (off + (micT(i0 + i) - L.t0) * bps);
+    zr += x[i] * Math.cos(ph); zi += x[i] * Math.sin(ph); ww += x[i];
+  }
+  const R = ww ? Math.hypot(zr, zi) / ww : 0, err = Math.atan2(zi, zr) / (2 * Math.PI);   // beats the cursor is ahead (−0.5…0.5)
+  M.dbg.R = R; M.dbg.err = err;
+  if (R > 0.1 && Math.abs(err) < 0.4) { L.t0 += 0.3 * err / bps; M.lock = t; }
+  $('#bpmVal').classList.toggle('lock', t - M.lock < 1.5);
+}
+async function micToggle() {
+  if (M.on) { micStop(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('Mikrofonen er ikke tilgjengelig her'); return; }
+  M.on = true; $('#btnMic').classList.add('on');
+  ac();
+  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch (e) { }
+  // created inside the tap so iOS lets it run
+  try { M.ctx = new (window.AudioContext || window.webkitAudioContext)(); M.ctx.resume().catch(() => { }); } catch (e) { micStop(); return; }
+  try {
+    M.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  } catch (e) { micStop(); toast('Fikk ikke bruke mikrofonen: ' + (e.message || e.name), 4000); return; }
+  if (!M.on) { micStop(); return; }
+  M.sr = M.ctx.sampleRate; M.envN = 0; M.samples = 0; M.base = Infinity; M.last = 0; M.lock = 0; M.buf.fill(0); micBands();
+  const src = M.ctx.createMediaStreamSource(M.stream), g = M.ctx.createGain();
+  M.node = M.ctx.createScriptProcessor(1024, 1, 1); g.gain.value = 0;
+  M.node.onaudioprocess = micProcess;
+  src.connect(M.node); M.node.connect(g); g.connect(M.ctx.destination);
+  toast('Mikrofonen følger tempoet – start med TAPP eller ▶ som vanlig', 3500);
+}
+function micStop() {
+  const was = M.on || M.stream;
+  if (M.stream) M.stream.getTracks().forEach(t => t.stop());
+  if (M.node) M.node.onaudioprocess = null;
+  if (M.ctx) M.ctx.close().catch(() => { });
+  M.on = false; M.stream = M.node = M.ctx = null;
+  $('#btnMic').classList.remove('on'); $('#bpmVal').classList.remove('lock');
+  if (was) try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { }
+}
+$('#btnMic').onclick = micToggle;
 
 /* swipe left/right on the focus view = next/previous chord */
 (function () {
